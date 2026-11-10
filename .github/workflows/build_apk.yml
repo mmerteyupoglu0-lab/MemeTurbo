@@ -1,0 +1,34 @@
+name: MemeTurbo APK Derleyici
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Kodu İndir
+        uses: actions/checkout@v4
+
+      - name: JDK 17 Kurulumu
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Gradle Kurulumu (Uyumlu Sürüm 8.6)
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.6"
+
+      - name: Debug APK Oluştur
+        run: gradle assembleDebug
+
+      - name: Hazır APK Dosyasını Yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: MemeTurbo-Android-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
