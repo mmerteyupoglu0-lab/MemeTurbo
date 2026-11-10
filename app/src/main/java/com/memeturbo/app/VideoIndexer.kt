@@ -26,7 +26,7 @@ class VideoIndexer(private val context: Context) {
 
     data class AlbumInfo(val name: String, val count: Int, val isAll: Boolean = false)
 
-    // Sayfa isimlerini ve Instagram/TikTok filigranlarını kökten temizleyen regex listesi
+    // Sayfa isimlerini ve Instagram/TikTok filigranlarını kökten temizleyen filtre listesi
     private val watermarkPatterns = listOf(
         Regex("@[a-zA-Z0-9._]+", RegexOption.IGNORE_CASE),
         Regex("[0-9]*galerim[a-zA-Z0-9._]*", RegexOption.IGNORE_CASE),
@@ -214,6 +214,13 @@ class VideoIndexer(private val context: Context) {
     }
 
     private suspend fun extractVideoData(file: File, voskModel: Model?): MemeVideo {
+        // 1. MUTLAK ÖNCELİK: TÜRKÇE SES VE REPLİK TANIMA!
+        val spokenText = if (voskModel != null) {
+            transcribeVideoAudio(file, voskModel)
+        } else {
+            ""
+        }
+
         val retriever = MediaMetadataRetriever()
         var durationMs = 0L
         val screenTexts = mutableSetOf<String>()
@@ -222,7 +229,7 @@ class VideoIndexer(private val context: Context) {
             retriever.setDataSource(file.absolutePath)
             durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
 
-            // Video içinde 3 farklı noktadan ekran yazısı (alt yazı / meme yazısı) kontrolü
+            // Video içinde 3 farklı noktadan ekran yazısı (alt yazı) kontrolü
             val sampleTimesUs = listOf(500_000L, 2_000_000L, 5_000_000L)
             for (timeUs in sampleTimesUs) {
                 if (timeUs > durationMs * 1000L && timeUs > 500_000L) continue
@@ -240,13 +247,6 @@ class VideoIndexer(private val context: Context) {
             try { retriever.release() } catch (_: Exception) {}
         }
 
-        // 1. ÖNCELİK: TÜRKÇE SES VE REPLİK TANIMA (Vosk Kaldi 16kHz Mono)
-        val spokenText = if (voskModel != null) {
-            transcribeVideoAudio(file, voskModel)
-        } else {
-            ""
-        }
-
         return MemeVideo(
             filePath = file.absolutePath,
             fileName = file.nameWithoutExtension,
@@ -260,12 +260,15 @@ class VideoIndexer(private val context: Context) {
     }
 
     /**
-     * Köşelerdeki gereksiz Instagram/TikTok filigranlarını ve sayfa kullanıcı adlarını temizler.
+     * Köşelerdeki gereksiz Instagram/TikTok filigranlarını, tek haneli sayıları ("8"),
+     * arka plan sembollerini ("s0", "d") ve sayfa kullanıcı adlarını temizler.
      */
     private fun filterWatermarks(rawText: String): String {
         val lines = rawText.split("\n").map { it.trim() }.filter { it.isNotBlank() }
         val filtered = lines.filter { line ->
-            line.length > 3 && watermarkPatterns.none { pattern -> pattern.containsMatchIn(line) }
+            val hasLetters = line.any { it.isLetter() }
+            val isGarbage = line.matches(Regex("^[0-9\\W_]+$"))
+            line.length > 3 && hasLetters && !isGarbage && watermarkPatterns.none { pattern -> pattern.containsMatchIn(line) }
         }
         return filtered.joinToString(" ").trim()
     }

@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
@@ -75,7 +76,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val privacyBanner = TextView(this).apply {
-            text = "🔒 %100 Çevrimdışı & Güvenli: Videolarınız cihazınızda işlenir, internete gitmez.\n🎙️ Replik ve Ses Tanıma: Memelerdeki konuşmalar otomatik dinlenip metne çevrilir."
+            text = "🔒 %100 Çevrimdışı & Güvenli: Videolarınız cihazınızda işlenir, internete gitmez.\n🎙️ 1. Öncelik Replik: Konuşulan replikler doğrudan dinlenip kart başlığı yapılır."
             textSize = 12f
             setTextColor(Color.parseColor("#38BDF8"))
             setPadding(0, dpToPx(6f), 0, dpToPx(8f))
@@ -261,6 +262,13 @@ class MainActivity : AppCompatActivity() {
         val indexer = VideoIndexer(this)
 
         lifecycleScope.launch {
+            if (voskModel == null) {
+                statusText.text = "🎙️ Türkçe ses modeli yükleniyor, lütfen bekleyin..."
+                voskModel = withContext(Dispatchers.IO) {
+                    indexer.getOrInitVoskModel()
+                }
+            }
+
             statusText.text = "${selectedAlbum.name} taranıyor... Sesler dinleniyor."
             indexer.indexAlbum(
                 albumInfo = selectedAlbum,
