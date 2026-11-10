@@ -18,6 +18,7 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.widget.*
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -69,11 +70,12 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.WHITE)
         }
 
-        val infoBanner = TextView(this).apply {
-            text = "💡 Not: Videolar indirilmez, internetinizi yemez. İlk tarama video sayınıza göre birkaç dakika sürebilir (sadece bir kez yapılır). Tarama sırasında uygulamayı kapatmayın."
+        // Güven veren Açık Gizlilik & Tarama Bildirimi
+        val privacyBanner = TextView(this).apply {
+            text = "🔒 %100 Çevrimdışı ve Gizli: Videolarınız indirilmez, internete gitmez. İlk tarama arşiv büyüklüğünüze göre 2-3 dakika sürebilir (sadece 1 kez yapılır). Lütfen kapatmayın."
             textSize = 12f
-            setTextColor(Color.parseColor("#94A3B8"))
-            setPadding(0, dpToPx(6f), 0, dpToPx(6f))
+            setTextColor(Color.parseColor("#38BDF8"))
+            setPadding(0, dpToPx(6f), 0, dpToPx(8f))
         }
 
         val setupRow = LinearLayout(this).apply {
@@ -82,7 +84,7 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dpToPx(8f) }
+            ).apply { topMargin = dpToPx(4f) }
         }
 
         val overlayCheck = Button(this).apply {
@@ -104,6 +106,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // İki Basamaklı Akıllı Erişilebilirlik Yönlendiricisi
         val accessibilityCheck = Button(this).apply {
             text = "2. Çift Tık İzni"
             textSize = 11f
@@ -115,23 +118,14 @@ class MainActivity : AppCompatActivity() {
             }
             layoutParams = LinearLayout.LayoutParams(0, dpToPx(34f), 1f)
             setOnClickListener {
-                // Doğrudan Uygulama Bilgisi sayfasına yönlendirir (Xiaomi Kısıtlanmış Ayarı tek tıkla açabilmek için)
-                try {
-                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                        data = Uri.parse("package:$packageName")
-                    }
-                    startActivity(intent)
-                    Toast.makeText(this@MainActivity, "En alttan (veya sağ üstten) 'Kısıtlanmış ayarlara izin ver'i açın, ardından Erişilebilirlik'ten aktif edin.", Toast.LENGTH_LONG).show()
-                } catch (_: Exception) {
-                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                }
+                showXiaomiPermissionGuide()
             }
         }
 
         setupRow.addView(overlayCheck)
         setupRow.addView(accessibilityCheck)
         header.addView(title)
-        header.addView(infoBanner)
+        header.addView(privacyBanner)
         header.addView(setupRow)
         mainContainer.addView(header)
 
@@ -175,7 +169,6 @@ class MainActivity : AppCompatActivity() {
         }
         mainContainer.addView(statusText)
 
-        // Sekmeler: Tümü | Videolar | Fotoğraflar (Aktif Sekme Mavi Kalır!)
         val tabRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(dpToPx(16f), dpToPx(4f), dpToPx(16f), dpToPx(8f))
@@ -213,6 +206,8 @@ class MainActivity : AppCompatActivity() {
 
         galleryRecycler = RecyclerView(this).apply {
             layoutManager = GridLayoutManager(this@MainActivity, 2)
+            setHasFixedSize(true)
+            setItemViewCacheSize(20) // Yağ gibi kaydırma için önbellek boyutu
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 0, 1f
@@ -225,6 +220,9 @@ class MainActivity : AppCompatActivity() {
             },
             onSendClick = { meme ->
                 shareMemeMedia(meme)
+            },
+            onEditTagsClick = { meme ->
+                showEditTagsDialog(meme)
             }
         )
         galleryRecycler.adapter = adapter
@@ -245,6 +243,49 @@ class MainActivity : AppCompatActivity() {
         })
 
         updateTabColors()
+    }
+
+    private fun showXiaomiPermissionGuide() {
+        AlertDialog.Builder(this)
+            .setTitle("🔑 Erişilebilirlik İzni Rehberi")
+            .setMessage("Xiaomi/Android güvenlik kilidini açmak için:\n\n1. Açılacak sayfada en alttaki 'Kısıtlanmış ayarlara izin ver' seçeneğini açın.\n2. Ardından Erişilebilirlik -> İndirilen Uygulamalar -> MemeTurbo'yu aktif edin.")
+            .setPositiveButton("Ayarlara Git") { _, _ ->
+                try {
+                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                } catch (_: Exception) {
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                }
+            }
+            .setNegativeButton("Doğrudan Erişilebilirlik") { _, _ ->
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+            .show()
+    }
+
+    private fun showEditTagsDialog(meme: MemeVideo) {
+        val input = EditText(this).apply {
+            hint = "Örn: Kaan Özdil, çıldırma, Hasan Arda"
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.GRAY)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("✏️ Videoya Arama Kelimesi Ekle")
+            .setView(input)
+            .setPositiveButton("Kaydet") { _, _ ->
+                val newTags = input.text.toString().trim()
+                if (newTags.isNotBlank()) {
+                    lifecycleScope.launch {
+                        MemeDatabase.getInstance(this@MainActivity).memeDao().appendCustomTags(meme.filePath, newTags)
+                        Toast.makeText(this@MainActivity, "Etiketler eklendi!", Toast.LENGTH_SHORT).show()
+                        filterList(searchInput.text.toString().trim())
+                    }
+                }
+            }
+            .setNegativeButton("İptal", null)
+            .show()
     }
 
     private fun setupInternalPlayerLayout(root: FrameLayout) {

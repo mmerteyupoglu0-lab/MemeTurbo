@@ -27,16 +27,17 @@ interface MemeDao {
     """)
     suspend fun searchMemes(query: String): List<MemeVideo>
 
-    @Query("SELECT * FROM meme_videos ORDER BY lastModified DESC LIMIT 100")
+    // Limitleri tamamen kaldırdık: 800+ videonun tamamı gelecek!
+    @Query("SELECT * FROM meme_videos ORDER BY lastModified DESC")
     suspend fun getRecentMemes(): List<MemeVideo>
 
-    @Query("SELECT * FROM meme_videos ORDER BY lastModified DESC LIMIT 100")
+    @Query("SELECT * FROM meme_videos ORDER BY lastModified DESC")
     suspend fun getAllMemes(): List<MemeVideo>
 
-    @Query("SELECT * FROM meme_videos WHERE isVideo = 1 ORDER BY lastModified DESC LIMIT 100")
+    @Query("SELECT * FROM meme_videos WHERE isVideo = 1 ORDER BY lastModified DESC")
     suspend fun getVideoMemes(): List<MemeVideo>
 
-    @Query("SELECT * FROM meme_videos WHERE isVideo = 0 ORDER BY lastModified DESC LIMIT 100")
+    @Query("SELECT * FROM meme_videos WHERE isVideo = 0 ORDER BY lastModified DESC")
     suspend fun getImageMemes(): List<MemeVideo>
 
     @Query("SELECT filePath FROM meme_videos")
@@ -44,6 +45,9 @@ interface MemeDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMeme(meme: MemeVideo)
+
+    @Query("UPDATE meme_videos SET visualLabels = visualLabels || ' ' || :newTags WHERE filePath = :path")
+    suspend fun appendCustomTags(path: String, newTags: String)
 
     @Query("SELECT COUNT(*) FROM meme_videos")
     suspend fun getCount(): Int
@@ -69,7 +73,7 @@ abstract class MemeDatabase : RoomDatabase() {
                     context.applicationContext,
                     MemeDatabase::class.java,
                     "memeturbo_db"
-                ).build() // Kalıcı: Artık verileri silmez, üstüne kurar!
+                ).build()
                 INSTANCE = instance
                 instance
             }
