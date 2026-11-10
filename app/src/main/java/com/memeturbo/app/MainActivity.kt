@@ -26,7 +26,10 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.vosk.Model
 import java.io.File
 
 class MainActivity : AppCompatActivity() {
@@ -38,6 +41,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var adapter: MemeGridAdapter
     private var availableAlbums = listOf<VideoIndexer.AlbumInfo>()
     private var currentFilter = 0
+    private var voskModel: Model? = null
 
     private lateinit var tabAllBtn: Button
     private lateinit var tabVideosBtn: Button
@@ -70,9 +74,9 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.WHITE)
         }
 
-        // Güven veren Açık Gizlilik & Tarama Bildirimi
+        // Kullanıcının istediği Gerçekçi Süre ve Arka Plan Bilgilendirmesi!
         val privacyBanner = TextView(this).apply {
-            text = "🔒 %100 Çevrimdışı ve Gizli: Videolarınız indirilmez, internete gitmez. İlk tarama arşiv büyüklüğünüze göre 2-3 dakika sürebilir (sadece 1 kez yapılır). Lütfen kapatmayın."
+            text = "🔒 %100 Çevrimdışı & Güvenli: Videolarınız indirilmez, dışarı çıkmaz.\n⏱️ Tahmini Süre: ~800 video için ilk tarama yaklaşık 20-30 dakika sürebilir (video başına ~2 sn). Arka planda çalışır, günlük işlerinize devam edebilirsiniz."
             textSize = 12f
             setTextColor(Color.parseColor("#38BDF8"))
             setPadding(0, dpToPx(6f), 0, dpToPx(8f))
@@ -106,7 +110,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // İki Basamaklı Akıllı Erişilebilirlik Yönlendiricisi
         val accessibilityCheck = Button(this).apply {
             text = "2. Çift Tık İzni"
             textSize = 11f
@@ -154,7 +157,7 @@ class MainActivity : AppCompatActivity() {
                 setColor(Color.parseColor("#16A34A"))
             }
             layoutParams = LinearLayout.LayoutParams(0, dpToPx(40f), 1f)
-            setOnClickListener { startScanSelectedAlbum() }
+            setOnClickListener { showScanOptionsDialog() }
         }
 
         scanRow.addView(albumSpinner)
@@ -207,7 +210,7 @@ class MainActivity : AppCompatActivity() {
         galleryRecycler = RecyclerView(this).apply {
             layoutManager = GridLayoutManager(this@MainActivity, 2)
             setHasFixedSize(true)
-            setItemViewCacheSize(20) // Yağ gibi kaydırma için önbellek boyutu
+            setItemViewCacheSize(30)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 0, 1f
@@ -243,6 +246,59 @@ class MainActivity : AppCompatActivity() {
         })
 
         updateTabColors()
+        initVoskModel()
+    }
+
+    private fun initVoskModel() {
+        lifecycleScope.launch {
+            voskModel = withContext(Dispatchers.IO) {
+                VideoIndexer(this@MainActivity).getOrInitVoskModel()
+            }
+            if (voskModel != null) {
+                Toast.makeText(this@MainActivity, "🎙️ Türkçe Ses Tanıma Modeli Hazır!", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    /**
+     * Kullanıcının İstediği Tarama Çeşitleri Menüsü!
+     */
+    private fun showScanOptionsDialog() {
+        if (availableAlbums.isEmpty()) return
+        val selectedAlbum = availableAlbums[albumSpinner.selectedItemPosition]
+
+        val options = arrayOf(
+            "⚡ Hızlı Tarama (Sadece taranmamış yeni videolar)",
+            "🧠 Derin Tarama (Mevcutların üzerine konuşma & kişi analizi ekle)",
+            "🔄 Sıfırdan Tam Tarama (Tüm albümü baştan analiz et)"
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle("Tarama Modunu Seçin (${selectedAlbum.name})")
+            .setItems(options) { _, which ->
+                startScanning(selectedAlbum, scanMode = which)
+            }
+            .setNegativeButton("İptal", null)
+            .show()
+    }
+
+    private fun startScanning(selectedAlbum: VideoIndexer.AlbumInfo, scanMode: Int) {
+        val indexer = VideoIndexer(this)
+        lifecycleScope.launch {
+            statusText.text = "${selectedAlbum.name} taranıyor... Günlük işlerinize devam edebilirsiniz."
+            indexer.indexAlbum(
+                albumInfo = selectedAlbum,
+                voskModel = voskModel,
+                isDeepScan = scanMode > 0,
+                scanMode = scanMode
+            ) { current, total, name ->
+                runOnUiThread {
+                    statusText.text = "Taranıyor ($current/$total): $name"
+                }
+            }
+            loadAlbumsIntoSpinner()
+            Toast.makeText(this@MainActivity, "Tarama tamamlandı!", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun showXiaomiPermissionGuide() {
@@ -479,23 +535,6 @@ class MainActivity : AppCompatActivity() {
             val images = db.getImageCount()
             statusText.text = "Toplam $total öğe ($videos video, $images fotoğraf) hazır."
             filterList("")
-        }
-    }
-
-    private fun startScanSelectedAlbum() {
-        if (availableAlbums.isEmpty()) return
-        val selectedAlbum = availableAlbums[albumSpinner.selectedItemPosition]
-        val indexer = VideoIndexer(this)
-
-        lifecycleScope.launch {
-            statusText.text = "${selectedAlbum.name} taranıyor..."
-            indexer.indexAlbum(selectedAlbum) { current, total, name ->
-                runOnUiThread {
-                    statusText.text = "Taranıyor ($current/$total): $name"
-                }
-            }
-            loadAlbumsIntoSpinner()
-            Toast.makeText(this@MainActivity, "Tarama tamamlandı!", Toast.LENGTH_SHORT).show()
         }
     }
 
