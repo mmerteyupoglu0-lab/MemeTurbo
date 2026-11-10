@@ -74,9 +74,8 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.WHITE)
         }
 
-        // Kullanıcının istediği Gerçekçi Süre ve Arka Plan Bilgilendirmesi!
         val privacyBanner = TextView(this).apply {
-            text = "🔒 %100 Çevrimdışı & Güvenli: Videolarınız indirilmez, dışarı çıkmaz.\n⏱️ Tahmini Süre: ~800 video için ilk tarama yaklaşık 20-30 dakika sürebilir (video başına ~2 sn). Arka planda çalışır, günlük işlerinize devam edebilirsiniz."
+            text = "🔒 %100 Çevrimdışı & Güvenli: Videolarınız cihazınızda işlenir, internete gitmez.\n🎙️ Replik ve Ses Tanıma: Memelerdeki konuşmalar otomatik dinlenip metne çevrilir."
             textSize = 12f
             setTextColor(Color.parseColor("#38BDF8"))
             setPadding(0, dpToPx(6f), 0, dpToPx(8f))
@@ -157,7 +156,7 @@ class MainActivity : AppCompatActivity() {
                 setColor(Color.parseColor("#16A34A"))
             }
             layoutParams = LinearLayout.LayoutParams(0, dpToPx(40f), 1f)
-            setOnClickListener { showScanOptionsDialog() }
+            setOnClickListener { startScanning() }
         }
 
         scanRow.addView(albumSpinner)
@@ -165,7 +164,7 @@ class MainActivity : AppCompatActivity() {
         mainContainer.addView(scanRow)
 
         statusText = TextView(this).apply {
-            text = "Albümler kontrol ediliyor..."
+            text = "🎙️ Ses tanıma motoru hazırlanıyor..."
             textSize = 12f
             setTextColor(Color.parseColor("#38BDF8"))
             setPadding(dpToPx(16f), 0, dpToPx(16f), dpToPx(8f))
@@ -187,7 +186,7 @@ class MainActivity : AppCompatActivity() {
         mainContainer.addView(tabRow)
 
         searchInput = EditText(this).apply {
-            hint = "Galeri içinde ara (kedi, kar, replikler)..."
+            hint = "Galeri içinde ara (replikler, kelimeler)..."
             setHintTextColor(Color.parseColor("#94A3B8"))
             setTextColor(Color.WHITE)
             textSize = 14f
@@ -218,15 +217,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         adapter = MemeGridAdapter(
-            onPreviewClick = { meme ->
-                showInternalPlayer(meme)
-            },
-            onSendClick = { meme ->
-                shareMemeMedia(meme)
-            },
-            onEditTagsClick = { meme ->
-                showEditTagsDialog(meme)
-            }
+            onPreviewClick = { meme -> showInternalPlayer(meme) },
+            onSendClick = { meme -> shareMemeMedia(meme) },
+            onEditTagsClick = { meme -> showEditTagsDialog(meme) }
         )
         galleryRecycler.adapter = adapter
         mainContainer.addView(galleryRecycler)
@@ -255,49 +248,99 @@ class MainActivity : AppCompatActivity() {
                 VideoIndexer(this@MainActivity).getOrInitVoskModel()
             }
             if (voskModel != null) {
-                Toast.makeText(this@MainActivity, "🎙️ Türkçe Ses Tanıma Modeli Hazır!", Toast.LENGTH_SHORT).show()
+                statusText.text = "🎙️ Türkçe Ses Tanıma Motoru Hazır!"
+            } else {
+                statusText.text = "Hazır (Albümler yüklendi)"
             }
         }
     }
 
-    /**
-     * Kullanıcının İstediği Tarama Çeşitleri Menüsü!
-     */
-    private fun showScanOptionsDialog() {
+    private fun startScanning() {
         if (availableAlbums.isEmpty()) return
         val selectedAlbum = availableAlbums[albumSpinner.selectedItemPosition]
-
-        val options = arrayOf(
-            "⚡ Hızlı Tarama (Sadece taranmamış yeni videolar)",
-            "🧠 Derin Tarama (Mevcutların üzerine konuşma & kişi analizi ekle)",
-            "🔄 Sıfırdan Tam Tarama (Tüm albümü baştan analiz et)"
-        )
-
-        AlertDialog.Builder(this)
-            .setTitle("Tarama Modunu Seçin (${selectedAlbum.name})")
-            .setItems(options) { _, which ->
-                startScanning(selectedAlbum, scanMode = which)
-            }
-            .setNegativeButton("İptal", null)
-            .show()
-    }
-
-    private fun startScanning(selectedAlbum: VideoIndexer.AlbumInfo, scanMode: Int) {
         val indexer = VideoIndexer(this)
+
         lifecycleScope.launch {
-            statusText.text = "${selectedAlbum.name} taranıyor... Günlük işlerinize devam edebilirsiniz."
+            statusText.text = "${selectedAlbum.name} taranıyor... Sesler dinleniyor."
             indexer.indexAlbum(
                 albumInfo = selectedAlbum,
-                voskModel = voskModel,
-                isDeepScan = scanMode > 0,
-                scanMode = scanMode
+                voskModel = voskModel
             ) { current, total, name ->
                 runOnUiThread {
                     statusText.text = "Taranıyor ($current/$total): $name"
                 }
             }
+            statusText.text = "✅ Tarama tamamlandı! Tüm replikler kaydedildi."
             loadAlbumsIntoSpinner()
+            filterList(searchInput.text.toString().trim())
             Toast.makeText(this@MainActivity, "Tarama tamamlandı!", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun filterList(query: String) {
+        lifecycleScope.launch {
+            val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
+            val rawList = when (currentFilter) {
+                1 -> db.getVideoMemes()
+                2 -> db.getImageMemes()
+                else -> db.getAllMemes()
+            }
+
+            val filtered = if (query.isEmpty()) {
+                rawList
+            } else {
+                val searchWords = normalizeText(query).split("\\s+".toRegex()).filter { it.isNotBlank() }
+                rawList.filter { item ->
+                    val combined = normalizeText("${item.fileName} ${item.spokenText} ${item.screenText} ${item.visualLabels}")
+                    searchWords.all { word -> combined.contains(word) }
+                }
+            }
+            adapter.submitList(filtered)
+        }
+    }
+
+    private fun normalizeText(text: String): String {
+        return text.lowercase()
+            .replace('ı', 'i')
+            .replace('ğ', 'g')
+            .replace('ü', 'u')
+            .replace('ş', 's')
+            .replace('ö', 'o')
+            .replace('ç', 'c')
+    }
+
+    private fun createFilterTab(title: String, filterId: Int): Button {
+        return Button(this).apply {
+            text = title
+            textSize = 12f
+            setTextColor(Color.WHITE)
+            isAllCaps = false
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34f), 1f).apply {
+                setMargins(dpToPx(3f), 0, dpToPx(3f), 0)
+            }
+            setOnClickListener {
+                currentFilter = filterId
+                updateTabColors()
+                filterList(searchInput.text.toString().trim())
+            }
+        }
+    }
+
+    private fun updateTabColors() {
+        val activeColor = Color.parseColor("#0284C7")
+        val inactiveColor = Color.parseColor("#1E293B")
+
+        tabAllBtn.background = GradientDrawable().apply {
+            cornerRadius = dpToPx(10f).toFloat()
+            setColor(if (currentFilter == 0) activeColor else inactiveColor)
+        }
+        tabVideosBtn.background = GradientDrawable().apply {
+            cornerRadius = dpToPx(10f).toFloat()
+            setColor(if (currentFilter == 1) activeColor else inactiveColor)
+        }
+        tabImagesBtn.background = GradientDrawable().apply {
+            cornerRadius = dpToPx(10f).toFloat()
+            setColor(if (currentFilter == 2) activeColor else inactiveColor)
         }
     }
 
@@ -323,7 +366,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showEditTagsDialog(meme: MemeVideo) {
         val input = EditText(this).apply {
-            hint = "Örn: Kaan Özdil, çıldırma, Hasan Arda"
+            hint = "Örn: Arda Turan, Kaan Özdil, çıldırma"
             setTextColor(Color.WHITE)
             setHintTextColor(Color.GRAY)
         }
@@ -335,7 +378,7 @@ class MainActivity : AppCompatActivity() {
                 if (newTags.isNotBlank()) {
                     lifecycleScope.launch {
                         MemeDatabase.getInstance(this@MainActivity).memeDao().appendCustomTags(meme.filePath, newTags)
-                        Toast.makeText(this@MainActivity, "Etiketler eklendi!", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, "Etiket eklendi!", Toast.LENGTH_SHORT).show()
                         filterList(searchInput.text.toString().trim())
                     }
                 }
@@ -402,16 +445,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showInternalPlayer(meme: MemeVideo) {
-        internalPlayerLayout?.visibility = View.VISIBLE
+        val overlay = internalPlayerLayout ?: return
+        val vView = internalVideoView ?: return
+        val iView = internalImageView ?: return
+
+        overlay.visibility = View.VISIBLE
         if (meme.isVideo) {
-            internalImageView?.visibility = View.GONE
-            internalVideoView?.visibility = View.VISIBLE
-            internalVideoView?.setVideoPath(meme.filePath)
-            internalVideoView?.start()
+            iView.visibility = View.GONE
+            vView.visibility = View.VISIBLE
+            vView.setVideoPath(meme.filePath)
+            vView.setOnPreparedListener { mp -> mp.isLooping = true }
+            vView.start()
         } else {
-            internalVideoView?.visibility = View.GONE
-            internalImageView?.visibility = View.VISIBLE
-            internalImageView?.setImageURI(Uri.fromFile(File(meme.filePath)))
+            vView.stopPlayback()
+            vView.visibility = View.GONE
+            iView.visibility = View.VISIBLE
+            val bmp = BitmapFactory.decodeFile(meme.filePath)
+            iView.setImageBitmap(bmp)
         }
     }
 
@@ -420,129 +470,11 @@ class MainActivity : AppCompatActivity() {
         internalPlayerLayout?.visibility = View.GONE
     }
 
-    override fun onBackPressed() {
-        if (internalPlayerLayout?.visibility == View.VISIBLE) {
-            hideInternalPlayer()
-        } else {
-            super.onBackPressed()
-        }
-    }
-
-    private fun dpToPx(dp: Float): Int {
-        return TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, dp, resources.displayMetrics).toInt()
-    }
-
-    private fun createFilterTab(label: String, type: Int): Button {
-        return Button(this).apply {
-            text = label
-            textSize = 12f
-            setTextColor(Color.WHITE)
-            isAllCaps = false
-            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34f), 1f).apply {
-                setMargins(dpToPx(3f), 0, dpToPx(3f), 0)
-            }
-            setOnClickListener {
-                currentFilter = type
-                updateTabColors()
-                filterList(searchInput.text.toString().trim())
-            }
-        }
-    }
-
-    private fun updateTabColors() {
-        fun setBg(btn: Button, selected: Boolean) {
-            btn.background = GradientDrawable().apply {
-                cornerRadius = dpToPx(14f).toFloat()
-                setColor(if (selected) Color.parseColor("#0284C7") else Color.parseColor("#1E293B"))
-            }
-        }
-        setBg(tabAllBtn, currentFilter == 0)
-        setBg(tabVideosBtn, currentFilter == 1)
-        setBg(tabImagesBtn, currentFilter == 2)
-    }
-
-    private fun filterList(query: String) {
-        lifecycleScope.launch {
-            val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
-            val baseList = if (query.isEmpty()) {
-                when (currentFilter) {
-                    1 -> db.getVideoMemes()
-                    2 -> db.getImageMemes()
-                    else -> db.getAllMemes()
-                }
-            } else {
-                val words = query.lowercase().split("\\s+".toRegex()).filter { it.isNotBlank() }
-                val all = db.getAllMemes()
-                all.filter { item ->
-                    val fullText = "${item.fileName} ${item.spokenText} ${item.screenText} ${item.visualLabels}".lowercase()
-                    val matches = words.all { w -> fullText.contains(w) }
-                    matches && when (currentFilter) {
-                        1 -> item.isVideo
-                        2 -> !item.isVideo
-                        else -> true
-                    }
-                }
-            }
-            adapter.submitList(baseList)
-        }
-    }
-
-    private fun checkPermissionAndLoadAlbums() {
-        val permissions = mutableListOf<String>()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permissions.add(Manifest.permission.READ_MEDIA_VIDEO)
-            permissions.add(Manifest.permission.READ_MEDIA_IMAGES)
-        } else {
-            permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
-        }
-
-        val ungranted = permissions.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-
-        if (ungranted.isNotEmpty()) {
-            ActivityCompat.requestPermissions(this, ungranted.toTypedArray(), 101)
-        } else {
-            loadAlbumsIntoSpinner()
-        }
-    }
-
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        loadAlbumsIntoSpinner()
-    }
-
-    private fun loadAlbumsIntoSpinner() {
-        lifecycleScope.launch {
-            val indexer = VideoIndexer(this@MainActivity)
-            availableAlbums = indexer.getAvailableAlbums()
-
-            if (availableAlbums.isEmpty()) {
-                statusText.text = "Galeride albüm bulunamadı."
-                return@launch
-            }
-
-            val albumNames = availableAlbums.map { "${it.name} (${it.count} öğe)" }
-            val spinnerAdapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, albumNames)
-            albumSpinner.adapter = spinnerAdapter
-
-            val defaultIdx = availableAlbums.indexOfFirst { it.name.contains("Garip Galerim", ignoreCase = true) }
-            if (defaultIdx != -1) albumSpinner.setSelection(defaultIdx)
-
-            val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
-            val total = db.getCount()
-            val videos = db.getVideoCount()
-            val images = db.getImageCount()
-            statusText.text = "Toplam $total öğe ($videos video, $images fotoğraf) hazır."
-            filterList("")
-        }
-    }
-
     private fun shareMemeMedia(meme: MemeVideo) {
         val file = File(meme.filePath)
         if (!file.exists()) return
 
-        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        val uri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", file)
         val mime = if (meme.isVideo) "video/*" else "image/*"
 
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -554,6 +486,57 @@ class MainActivity : AppCompatActivity() {
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        startActivity(Intent.createChooser(shareIntent, "Paylaş"))
+        startActivity(Intent.createChooser(shareIntent, "Meme Paylaş"))
+    }
+
+    private fun checkPermissionAndLoadAlbums() {
+        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            arrayOf(Manifest.permission.READ_MEDIA_VIDEO, Manifest.permission.READ_MEDIA_IMAGES)
+        } else {
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+
+        val missing = permissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (missing.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, missing.toTypedArray(), 1001)
+        } else {
+            loadAlbumsIntoSpinner()
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 1001 && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+            loadAlbumsIntoSpinner()
+        }
+    }
+
+    private fun loadAlbumsIntoSpinner() {
+        lifecycleScope.launch {
+            val indexer = VideoIndexer(this@MainActivity)
+            availableAlbums = indexer.getAvailableAlbums()
+
+            val names = availableAlbums.map { "${it.name} (${it.count} öğe)" }
+            val spinnerAdapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, names)
+            albumSpinner.adapter = spinnerAdapter
+
+            val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
+            val totalDb = db.getCount()
+            statusText.text = if (totalDb > 0) "Kayıtlı: $totalDb medya hazır" else "Taramaya hazır"
+
+            filterList("")
+        }
+    }
+
+    private fun dpToPx(dp: Float): Int {
+        return TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, dp, resources.displayMetrics).toInt()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        internalVideoView?.stopPlayback()
     }
 }

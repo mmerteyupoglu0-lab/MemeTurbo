@@ -16,7 +16,6 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
-import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.*
 import androidx.core.content.FileProvider
 import androidx.recyclerview.widget.GridLayoutManager
@@ -96,30 +95,13 @@ class SmartChatTriggerService : AccessibilityService() {
             }
         }
 
-        // Üst Bar: [🌟 Albüm Filtresi ▾] + Arama Kutusu + Kapatma (✕)
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
 
-        val albumFilterBtn = Button(this).apply {
-            text = "📁 Albüm ▾"
-            setTextColor(Color.parseColor("#38BDF8"))
-            textSize = 11f
-            isAllCaps = false
-            setPadding(dpToPx(6f), 0, dpToPx(6f), 0)
-            background = GradientDrawable().apply {
-                cornerRadius = dpToPx(12f).toFloat()
-                setColor(Color.parseColor("#1E293B"))
-                setStroke(dpToPx(1f), Color.parseColor("#475569"))
-            }
-            layoutParams = LinearLayout.LayoutParams(dpToPx(85f), dpToPx(38f)).apply {
-                rightMargin = dpToPx(6f)
-            }
-        }
-
         val searchInput = EditText(this).apply {
-            hint = "Meme ara (kedi, kar, replikler)..."
+            hint = "Meme ara (replikler, kelimeler)..."
             setHintTextColor(Color.parseColor("#94A3B8"))
             setTextColor(Color.WHITE)
             textSize = 14f
@@ -128,7 +110,7 @@ class SmartChatTriggerService : AccessibilityService() {
                 cornerRadius = dpToPx(16f).toFloat()
                 setColor(Color.parseColor("#1E293B"))
             }
-            setPadding(dpToPx(12f), dpToPx(8f), dpToPx(12f), dpToPx(8f))
+            setPadding(dpToPx(14f), dpToPx(10f), dpToPx(14f), dpToPx(10f))
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
 
@@ -136,16 +118,14 @@ class SmartChatTriggerService : AccessibilityService() {
             text = "✕"
             setTextColor(Color.WHITE)
             textSize = 20f
-            setPadding(dpToPx(10f), dpToPx(4f), dpToPx(4f), dpToPx(4f))
+            setPadding(dpToPx(12f), dpToPx(4f), dpToPx(4f), dpToPx(4f))
             setOnClickListener { closeSearchPanel() }
         }
 
-        topBar.addView(albumFilterBtn)
         topBar.addView(searchInput)
         topBar.addView(closeBtn)
         container.addView(topBar)
 
-        // Video Önizleme Alanı
         val previewBox = FrameLayout(this).apply {
             visibility = View.GONE
             setPadding(0, dpToPx(6f), 0, dpToPx(6f))
@@ -164,7 +144,7 @@ class SmartChatTriggerService : AccessibilityService() {
             layoutManager = GridLayoutManager(this@SmartChatTriggerService, 2)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dpToPx(310f)
+                dpToPx(320f)
             ).apply { topMargin = dpToPx(8f) }
         }
 
@@ -186,19 +166,18 @@ class SmartChatTriggerService : AccessibilityService() {
             adapter.submitList(db.getRecentMemes())
         }
 
-        // Akıllı Çoklu Kelime Arama Motoru
         searchInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                 val q = s?.toString()?.trim() ?: ""
                 serviceScope.launch {
+                    val all = db.getAllMemes()
                     val results = if (q.isEmpty()) {
-                        db.getRecentMemes()
+                        all.take(60)
                     } else {
-                        val words = q.lowercase().split("\\s+".toRegex()).filter { it.isNotBlank() }
-                        val all = db.getAllMemes()
+                        val words = normalizeText(q).split("\\s+".toRegex()).filter { it.isNotBlank() }
                         all.filter { item ->
-                            val fullText = "${item.fileName} ${item.spokenText} ${item.screenText} ${item.visualLabels}".lowercase()
+                            val fullText = normalizeText("${item.fileName} ${item.spokenText} ${item.screenText} ${item.visualLabels}")
                             words.all { w -> fullText.contains(w) }
                         }
                     }
@@ -208,9 +187,8 @@ class SmartChatTriggerService : AccessibilityService() {
             override fun afterTextChanged(s: Editable?) {}
         })
 
-        // Alt Navigasyon Tuşlarını Kapatmayan Boyut & Konum Ayarı!
         val displayMetrics = resources.displayMetrics
-        val panelHeight = (displayMetrics.heightPixels * 0.58).toInt() // Ekranın sadece %58'ini kaplar, alt tuşlar ASLA kaybolmaz!
+        val panelHeight = (displayMetrics.heightPixels * 0.58).toInt()
 
         val params = WindowManager.LayoutParams(
             (displayMetrics.widthPixels * 0.92).toInt(),
@@ -220,13 +198,23 @@ class SmartChatTriggerService : AccessibilityService() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = dpToPx(36f) // Klavyenin ve sohbet kutusunun hemen üstüne oturur
+            y = dpToPx(36f)
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE
         }
 
         searchPanelView = container
         windowManager.addView(container, params)
         searchInput.requestFocus()
+    }
+
+    private fun normalizeText(text: String): String {
+        return text.lowercase()
+            .replace('ı', 'i')
+            .replace('ğ', 'g')
+            .replace('ü', 'u')
+            .replace('ş', 's')
+            .replace('ö', 'o')
+            .replace('ç', 'c')
     }
 
     private fun closeSearchPanel() {
@@ -239,7 +227,7 @@ class SmartChatTriggerService : AccessibilityService() {
     }
 
     /**
-     * Sohbetten hiç çıkmadan doğrudan sohbete yapıştırmayı dener, olmazsa yerel paylaşımı açar.
+     * Instagram ve WhatsApp ile kusursuz uyumlu doğrudan paylaşım (Orijinal stabil akış).
      */
     private fun sendMediaDirectlyToChat(meme: MemeVideo) {
         val file = File(meme.filePath)
@@ -248,38 +236,29 @@ class SmartChatTriggerService : AccessibilityService() {
         val uri = FileProvider.getUriForFile(this, "${applicationContext.packageName}.fileprovider", file)
         val mime = if (meme.isVideo) "video/*" else "image/*"
 
-        // 1. Panoya kopyala
+        // 1. Panoya kopyala (Kullanıcı manuel yapıştırmak isterse hazır)
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val clip = ClipData.newUri(contentResolver, meme.fileName, uri)
         clipboard.setPrimaryClip(clip)
 
-        // 2. Paneli kapat ve aktif mesaj kutusuna OTOMATİK YAPIŞTIR (Accessibility Injection)
+        // 2. Yüzen paneli kapat
         closeSearchPanel()
 
-        serviceScope.launch {
-            delay(150)
-            val focusedInput = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-            val pasted = focusedInput?.performAction(AccessibilityNodeInfo.ACTION_PASTE) == true
+        // 3. Instagram / WhatsApp doğrudan paylaşım intent'i başlat
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = mime
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            currentChatPackage?.let { setPackage(it) }
+        }
 
-            if (!pasted) {
-                // Eğer uygulama güvenlik gereği doğrudan yapıştırmaya izin vermezse yerel paylaşımı açar
-                val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                    type = mime
-                    putExtra(Intent.EXTRA_STREAM, uri)
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-                    currentChatPackage?.let { setPackage(it) }
-                }
-                try {
-                    startActivity(shareIntent)
-                } catch (_: Exception) {
-                    val chooser = Intent.createChooser(shareIntent, "Meme Gönder").apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    startActivity(chooser)
-                }
-            } else {
-                Toast.makeText(this@SmartChatTriggerService, "Sohbete yapıştırıldı! 🚀", Toast.LENGTH_SHORT).show()
+        try {
+            startActivity(shareIntent)
+        } catch (_: Exception) {
+            val chooser = Intent.createChooser(shareIntent, "Meme Gönder").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
+            startActivity(chooser)
         }
     }
 

@@ -12,8 +12,8 @@ android {
         applicationId = "com.memeturbo.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 6
-        versionName = "1.6.0"
+        versionCode = 8
+        versionName = "1.8.0"
     }
 
     signingConfigs {
@@ -58,9 +58,10 @@ dependencies {
     implementation("androidx.room:room-ktx:$roomVersion")
     ksp("androidx.room:room-compiler:$roomVersion")
 
+    // Sadece Temiz Ekran Yazısı (OCR)
     implementation("com.google.mlkit:text-recognition:16.0.1")
-    implementation("com.google.mlkit:image-labeling:17.0.9")
 
+    // Türkçe Çevrimdışı Ses Tanıma (Vosk Kaldi)
     implementation("com.alphacephei:vosk-android:0.3.47")
     implementation("net.java.dev.jna:jna:5.13.0@aar")
 

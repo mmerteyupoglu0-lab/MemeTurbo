@@ -145,7 +145,6 @@ class MemeGridAdapter(
     override fun onBindViewHolder(holder: MemeViewHolder, position: Int) {
         val meme = items[position]
 
-        // Asenkron ve önbellekli küçük resim yükleme (Arayüzde takılmayı SIFIRA indirir!)
         val cached = memoryCache.get(meme.filePath)
         if (cached != null) {
             holder.thumbView.setImageBitmap(cached)
@@ -172,11 +171,15 @@ class MemeGridAdapter(
             }
         }
 
-        // Öncelik Sıralaması: 1. OCR (Ekrandaki yazı) | 2. Konuşma | 3. Görsel etiketler
+        // KESİN ÖNCELİK SIRALAMASI:
+        // 1. SES / REPLİK: Kullanıcının aradığı ve duyduğu ilk şey!
+        // 2. EKRAN YAZISI (OCR): Alt yazı veya ekrandaki meme yazısı
+        // 3. ÖZEL ETİKETLER: Kullanıcının ✏️ ile eklediği isimler (Örn: Arda Turan)
+        // 4. Dosya Adı
         val snippet = when {
-            meme.screenText.isNotBlank() -> "📝 ${meme.screenText}"
             meme.spokenText.isNotBlank() -> "🗣️ ${meme.spokenText}"
-            meme.visualLabels.isNotBlank() -> "👁️ ${meme.visualLabels.take(30)}..."
+            meme.screenText.isNotBlank() -> "📝 ${meme.screenText}"
+            meme.visualLabels.isNotBlank() -> "🏷️ ${meme.visualLabels}"
             else -> meme.fileName
         }
         holder.transcriptView.text = snippet

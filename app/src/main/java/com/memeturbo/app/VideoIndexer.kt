@@ -8,8 +8,6 @@ import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.provider.MediaStore
 import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.label.ImageLabeling
-import com.google.mlkit.vision.label.defaults.ImageLabelerOptions
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.Dispatchers
@@ -24,12 +22,11 @@ import java.io.FileOutputStream
 class VideoIndexer(private val context: Context) {
 
     private val ocrRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-    private val imageLabeler = ImageLabeling.getClient(ImageLabelerOptions.DEFAULT_OPTIONS)
     private val db = MemeDatabase.getInstance(context).memeDao()
 
     data class AlbumInfo(val name: String, val count: Int, val isAll: Boolean = false)
 
-    // Sayfa isimlerini, Instagram/TikTok filigranlarını temizleme filtresi
+    // Sayfa isimlerini ve Instagram/TikTok filigranlarını kökten temizleyen regex listesi
     private val watermarkPatterns = listOf(
         Regex("@[a-zA-Z0-9._]+", RegexOption.IGNORE_CASE),
         Regex("[0-9]*galerim[a-zA-Z0-9._]*", RegexOption.IGNORE_CASE),
@@ -40,45 +37,27 @@ class VideoIndexer(private val context: Context) {
         Regex(".*instagram.*", RegexOption.IGNORE_CASE),
         Regex(".*tiktok.*", RegexOption.IGNORE_CASE),
         Regex(".*post.*", RegexOption.IGNORE_CASE),
-        Regex(".*sayfa.*", RegexOption.IGNORE_CASE)
-    )
-
-    private val trDictionary = mapOf(
-        "cat" to "kedi pisi kedicik",
-        "dog" to "köpek it kuçu azgın köpek",
-        "carnivore" to "kedi köpek hayvan",
-        "pet" to "evcil hayvan kedi köpek",
-        "mammal" to "hayvan",
-        "snow" to "kar karlı kış",
-        "car" to "araba otomobil araç",
-        "vehicle" to "araba araç",
-        "smile" to "gülümseme gülme komik",
-        "baby" to "bebek çocuk",
-        "water" to "su deniz göl havuz h2o",
-        "bottle" to "şişe su h2o",
-        "food" to "yemek aş gıda",
-        "person" to "adam insan kişi erkek kadın",
-        "man" to "adam erkek kişi",
-        "woman" to "kadın kız",
-        "tree" to "ağaç orman doğa",
-        "crowd" to "kalabalık grup arkadaşlar ortam",
-        "people" to "insanlar arkadaşlar grup ortam kalabalık",
-        "selfie" to "özçekim selfie ben kendim",
-        "monkey" to "maymun şempanze su veren maymun",
-        "ape" to "maymun şempanze",
-        "place of worship" to "cami kilise ibadethane mimari ayasofya",
-        "building" to "bina mimari yapı",
-        "architecture" to "mimari tarihi yapı"
+        Regex(".*sayfa.*", RegexOption.IGNORE_CASE),
+        Regex(".*arsiv.*", RegexOption.IGNORE_CASE),
+        Regex(".*reels.*", RegexOption.IGNORE_CASE),
+        Regex(".*kesfet.*", RegexOption.IGNORE_CASE),
+        Regex(".*takip.*", RegexOption.IGNORE_CASE)
     )
 
     /**
-     * APK içine gömülen Türkçe Vosk ses modelini ilk kullanımda dahili hafızaya açar.
+     * APK içerisindeki Türkçe Vosk ses modelini ilk kullanımda dahili hafızaya çıkartır.
+     * Yarım kalma hatalarına karşı .complete doğrulama dosyası kullanır.
      */
     fun getOrInitVoskModel(): Model? {
         val destDir = File(context.filesDir, "vosk-model-small-tr")
-        if (!destDir.exists()) {
+        val markerFile = File(destDir, ".complete")
+
+        if (!destDir.exists() || !markerFile.exists()) {
             try {
+                destDir.deleteRecursively()
+                destDir.mkdirs()
                 copyAssetsFolder("models/vosk-model-small-tr", destDir)
+                markerFile.createNewFile()
             } catch (e: Exception) {
                 e.printStackTrace()
                 return null
@@ -147,20 +126,11 @@ class VideoIndexer(private val context: Context) {
         return@withContext result
     }
 
-    /**
-     * Tarama Çeşitleri:
-     * mode 0: Sadece henüz taranmamış yeni medyaları tara (Kalanları tara)
-     * mode 1: Mevcut taranmışların üzerine yeniden derin analiz yap
-     * mode 2: Tüm albümü baştan sona tara
-     */
     suspend fun indexAlbum(
         albumInfo: AlbumInfo,
         voskModel: Model?,
-        isDeepScan: Boolean,
-        scanMode: Int,
         onProgress: (current: Int, total: Int, name: String) -> Unit
     ) = withContext(Dispatchers.IO) {
-        val existingPaths = db.getAllIndexedPaths().toSet()
         val mediaList = mutableListOf<Triple<String, String, Boolean>>()
 
         val isAll = albumInfo.isAll
@@ -195,21 +165,17 @@ class VideoIndexer(private val context: Context) {
             }
         }
 
-        val targetList = when (scanMode) {
-            0 -> mediaList.filter { it.first !in existingPaths } // Sadece yeniler
-            else -> mediaList // Tüm liste
-        }
-        val total = targetList.size
+        val total = mediaList.size
 
-        targetList.forEachIndexed { index, item ->
+        mediaList.forEachIndexed { index, item ->
             val file = File(item.first)
             onProgress(index + 1, total, item.second)
             if (file.exists()) {
                 try {
                     val metadata = if (item.third) {
-                        extractVideoData(file, voskModel, isDeepScan)
+                        extractVideoData(file, voskModel)
                     } else {
-                        extractImageData(file, isDeepScan)
+                        extractImageData(file)
                     }
                     db.insertMeme(metadata)
                 } catch (e: Exception) {
@@ -219,26 +185,16 @@ class VideoIndexer(private val context: Context) {
         }
     }
 
-    private suspend fun extractImageData(file: File, isDeepScan: Boolean): MemeVideo {
+    private suspend fun extractImageData(file: File): MemeVideo {
         val screenTexts = mutableSetOf<String>()
-        val labels = mutableSetOf<String>()
 
         try {
             val bitmap = BitmapFactory.decodeFile(file.absolutePath)
             if (bitmap != null) {
                 val inputImage = InputImage.fromBitmap(bitmap, 0)
-
                 val ocrResult = ocrRecognizer.process(inputImage).await()
                 val cleanLines = filterWatermarks(ocrResult.text)
                 if (cleanLines.isNotEmpty()) screenTexts.add(cleanLines)
-
-                val labelResults = imageLabeler.process(inputImage).await()
-                for (lbl in labelResults) {
-                    val englishName = lbl.text.lowercase()
-                    labels.add(englishName)
-                    trDictionary[englishName]?.let { labels.add(it) }
-                }
-
                 bitmap.recycle()
             }
         } catch (e: Exception) {
@@ -251,48 +207,31 @@ class VideoIndexer(private val context: Context) {
             durationMs = 0L,
             spokenText = "",
             screenText = screenTexts.joinToString(" | "),
-            visualLabels = labels.joinToString(" "),
+            visualLabels = "",
             isVideo = false,
             lastModified = file.lastModified()
         )
     }
 
-    private suspend fun extractVideoData(file: File, voskModel: Model?, isDeepScan: Boolean): MemeVideo {
+    private suspend fun extractVideoData(file: File, voskModel: Model?): MemeVideo {
         val retriever = MediaMetadataRetriever()
         var durationMs = 0L
         val screenTexts = mutableSetOf<String>()
-        val labels = mutableSetOf<String>()
 
         try {
             retriever.setDataSource(file.absolutePath)
             durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
 
-            val samplePointsUs = mutableListOf<Long>()
-            val durationUs = durationMs * 1000L
-            val stepUs = 1_500_000L
-            var currentUs = 500_000L
-            while (currentUs < durationUs && samplePointsUs.size < 12) {
-                samplePointsUs.add(currentUs)
-                currentUs += stepUs
-            }
-            if (samplePointsUs.isEmpty()) samplePointsUs.add(500_000L)
-
-            for (timeUs in samplePointsUs) {
+            // Video içinde 3 farklı noktadan ekran yazısı (alt yazı / meme yazısı) kontrolü
+            val sampleTimesUs = listOf(500_000L, 2_000_000L, 5_000_000L)
+            for (timeUs in sampleTimesUs) {
+                if (timeUs > durationMs * 1000L && timeUs > 500_000L) continue
                 val bitmap = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 if (bitmap != null) {
                     val inputImage = InputImage.fromBitmap(bitmap, 0)
-
                     val result = ocrRecognizer.process(inputImage).await()
                     val cleanLines = filterWatermarks(result.text)
                     if (cleanLines.isNotEmpty()) screenTexts.add(cleanLines)
-
-                    val labelResults = imageLabeler.process(inputImage).await()
-                    for (lbl in labelResults) {
-                        val englishName = lbl.text.lowercase()
-                        labels.add(englishName)
-                        trDictionary[englishName]?.let { labels.add(it) }
-                    }
-
                     bitmap.recycle()
                 }
             }
@@ -301,7 +240,7 @@ class VideoIndexer(private val context: Context) {
             try { retriever.release() } catch (_: Exception) {}
         }
 
-        // 1. ÖNCELİK: TÜRKÇE SES VE REPLİK TANIMA!
+        // 1. ÖNCELİK: TÜRKÇE SES VE REPLİK TANIMA (Vosk Kaldi 16kHz Mono)
         val spokenText = if (voskModel != null) {
             transcribeVideoAudio(file, voskModel)
         } else {
@@ -314,7 +253,7 @@ class VideoIndexer(private val context: Context) {
             durationMs = durationMs,
             spokenText = spokenText,
             screenText = screenTexts.joinToString(" | "),
-            visualLabels = labels.joinToString(" "),
+            visualLabels = "",
             isVideo = true,
             lastModified = file.lastModified()
         )
@@ -326,14 +265,21 @@ class VideoIndexer(private val context: Context) {
     private fun filterWatermarks(rawText: String): String {
         val lines = rawText.split("\n").map { it.trim() }.filter { it.isNotBlank() }
         val filtered = lines.filter { line ->
-            watermarkPatterns.none { pattern -> pattern.containsMatchIn(line) }
+            line.length > 3 && watermarkPatterns.none { pattern -> pattern.containsMatchIn(line) }
         }
         return filtered.joinToString(" ").trim()
     }
 
+    /**
+     * Videodaki konuşmaları / replikleri 16kHz Mono PCM'e dönüştürerek Vosk motoruna iletir.
+     * İlk 20 saniyelik ses parçasını çözmesi hem çok hızlıdır hem de repliği tam yakalar.
+     */
     private fun transcribeVideoAudio(videoFile: File, voskModel: Model): String {
         val extractor = MediaExtractor()
         val transcriptParts = mutableListOf<String>()
+        var codec: MediaCodec? = null
+        var recognizer: Recognizer? = null
+
         try {
             extractor.setDataSource(videoFile.absolutePath)
             var audioTrackIndex = -1
@@ -353,27 +299,35 @@ class VideoIndexer(private val context: Context) {
 
             extractor.selectTrack(audioTrackIndex)
             val mime = format.getString(MediaFormat.KEY_MIME) ?: return ""
-            val sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-            val recognizer = Recognizer(voskModel, sampleRate.toFloat())
+            val inSampleRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) format.getInteger(MediaFormat.KEY_SAMPLE_RATE) else 44100
+            val channelCount = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 1
 
-            val codec = MediaCodec.createDecoderByType(mime)
+            // Vosk Türkçe küçük modeli her zaman 16000 Hz Mono ses bekler!
+            recognizer = Recognizer(voskModel, 16000f)
+
+            codec = MediaCodec.createDecoderByType(mime)
             codec.configure(format, null, null, 0)
             codec.start()
 
             val bufferInfo = MediaCodec.BufferInfo()
             var isEOS = false
+            var totalProcessedTimeUs = 0L
+            val maxAudioDurationUs = 20_000_000L // İlk 20 saniye
 
-            while (!isEOS) {
+            while (!isEOS && totalProcessedTimeUs < maxAudioDurationUs) {
                 val inIndex = codec.dequeueInputBuffer(10_000)
                 if (inIndex >= 0) {
-                    val inputBuffer = codec.getInputBuffer(inIndex) ?: continue
-                    val sampleSize = extractor.readSampleData(inputBuffer, 0)
-                    if (sampleSize < 0) {
-                        codec.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                        isEOS = true
-                    } else {
-                        codec.queueInputBuffer(inIndex, 0, sampleSize, extractor.sampleTime, 0)
-                        extractor.advance()
+                    val inputBuffer = codec.getInputBuffer(inIndex)
+                    if (inputBuffer != null) {
+                        val sampleSize = extractor.readSampleData(inputBuffer, 0)
+                        if (sampleSize < 0) {
+                            codec.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            isEOS = true
+                        } else {
+                            totalProcessedTimeUs = extractor.sampleTime
+                            codec.queueInputBuffer(inIndex, 0, sampleSize, totalProcessedTimeUs, 0)
+                            extractor.advance()
+                        }
                     }
                 }
 
@@ -384,10 +338,15 @@ class VideoIndexer(private val context: Context) {
                         val pcmBytes = ByteArray(bufferInfo.size)
                         outputBuffer.get(pcmBytes)
                         outputBuffer.clear()
-                        if (recognizer.acceptWaveForm(pcmBytes, pcmBytes.size)) {
-                            val resJson = JSONObject(recognizer.result)
-                            val text = resJson.optString("text", "")
-                            if (text.isNotBlank()) transcriptParts.add(text)
+
+                        // Stereo ve 44.1/48kHz sesi Vosk'a uygun 16kHz Mono 16-bit PCM'e dönüştür
+                        val resampled16k = convertTo16kMono(pcmBytes, inSampleRate, channelCount)
+                        if (resampled16k.isNotEmpty()) {
+                            if (recognizer.acceptWaveForm(resampled16k, resampled16k.size)) {
+                                val resJson = JSONObject(recognizer.result)
+                                val text = resJson.optString("text", "").trim()
+                                if (text.isNotBlank()) transcriptParts.add(text)
+                            }
                         }
                     }
                     codec.releaseOutputBuffer(outIndex, false)
@@ -396,16 +355,64 @@ class VideoIndexer(private val context: Context) {
             }
 
             val finalJson = JSONObject(recognizer.finalResult)
-            val finalText = finalJson.optString("text", "")
+            val finalText = finalJson.optString("text", "").trim()
             if (finalText.isNotBlank()) transcriptParts.add(finalText)
 
-            codec.stop()
-            codec.release()
-            recognizer.close()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            e.printStackTrace()
         } finally {
+            try { codec?.stop() } catch (_: Exception) {}
+            try { codec?.release() } catch (_: Exception) {}
+            try { recognizer?.close() } catch (_: Exception) {}
             try { extractor.release() } catch (_: Exception) {}
         }
-        return transcriptParts.joinToString(" ")
+        return transcriptParts.joinToString(" ").trim()
+    }
+
+    /**
+     * Stereo (veya çok kanallı) ve yüksek örnekleme hızlı (44.1k/48k) PCM sesini
+     * Vosk modelinin kabul ettiği 16 kHz Mono 16-bit PCM formatına dönüştürür.
+     */
+    private fun convertTo16kMono(rawPcm: ByteArray, inSampleRate: Int, channels: Int): ByteArray {
+        val totalShorts = rawPcm.size / 2
+        if (totalShorts == 0) return ByteArray(0)
+
+        // 1. Mono Shorts çıkarımı (Kanal ortalaması)
+        val monoShorts: ShortArray
+        if (channels >= 2) {
+            val frames = totalShorts / channels
+            monoShorts = ShortArray(frames)
+            for (i in 0 until frames) {
+                var sum = 0
+                for (c in 0 until channels) {
+                    val byteIdx = (i * channels + c) * 2
+                    val s = (rawPcm[byteIdx].toInt() and 0xFF) or (rawPcm[byteIdx + 1].toInt() shl 8)
+                    sum += s.toShort().toInt()
+                }
+                monoShorts[i] = (sum / channels).toShort()
+            }
+        } else {
+            monoShorts = ShortArray(totalShorts)
+            for (i in 0 until totalShorts) {
+                val byteIdx = i * 2
+                val s = (rawPcm[byteIdx].toInt() and 0xFF) or (rawPcm[byteIdx + 1].toInt() shl 8)
+                monoShorts[i] = s.toShort()
+            }
+        }
+
+        // 2. 16000 Hz'e yeniden örnekleme (Resampling)
+        val targetRate = 16000
+        val ratio = inSampleRate.toDouble() / targetRate.toDouble()
+        val outLen = (monoShorts.size / ratio).toInt()
+        if (outLen <= 0) return ByteArray(0)
+
+        val outBytes = ByteArray(outLen * 2)
+        for (i in 0 until outLen) {
+            val srcIdx = (i * ratio).toInt().coerceIn(0, monoShorts.size - 1)
+            val sample = monoShorts[srcIdx].toInt()
+            outBytes[i * 2] = (sample and 0xFF).toByte()
+            outBytes[i * 2 + 1] = ((sample shr 8) and 0xFF).toByte()
+        }
+        return outBytes
     }
 }
