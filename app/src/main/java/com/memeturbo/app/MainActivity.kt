@@ -144,24 +144,38 @@ class MainActivity : AppCompatActivity() {
                 setColor(Color.parseColor("#1E293B"))
                 setStroke(dpToPx(1f), Color.parseColor("#475569"))
             }
-            layoutParams = LinearLayout.LayoutParams(0, dpToPx(40f), 1.6f).apply { rightMargin = dpToPx(8f) }
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(40f), 1.4f).apply { rightMargin = dpToPx(6f) }
         }
 
         val scanBtn = Button(this).apply {
             text = "Tara ⚡"
-            textSize = 13f
+            textSize = 12f
             setTextColor(Color.WHITE)
             isAllCaps = false
             background = GradientDrawable().apply {
                 cornerRadius = dpToPx(12f).toFloat()
                 setColor(Color.parseColor("#16A34A"))
             }
-            layoutParams = LinearLayout.LayoutParams(0, dpToPx(40f), 1f)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(40f), 0.9f).apply { rightMargin = dpToPx(6f) }
             setOnClickListener { startScanning() }
+        }
+
+        val repairBtn = Button(this).apply {
+            text = "🔧 Onar"
+            textSize = 12f
+            setTextColor(Color.WHITE)
+            isAllCaps = false
+            background = GradientDrawable().apply {
+                cornerRadius = dpToPx(12f).toFloat()
+                setColor(Color.parseColor("#D97706"))
+            }
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(40f), 0.9f)
+            setOnClickListener { startQuickRepair() }
         }
 
         scanRow.addView(albumSpinner)
         scanRow.addView(scanBtn)
+        scanRow.addView(repairBtn)
         mainContainer.addView(scanRow)
 
         statusText = TextView(this).apply {
@@ -282,6 +296,64 @@ class MainActivity : AppCompatActivity() {
             loadAlbumsIntoSpinner()
             filterList(searchInput.text.toString().trim())
             Toast.makeText(this@MainActivity, "Tarama tamamlandı!", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /**
+     * Kullanıcının İstediği: Tüm galeriyi 30 dakika baştan taramadan,
+     * sadece eski etiket çöplerini silip eksik replikleri hızlıca tamamlayan Akıllı Onarım!
+     */
+    private fun startQuickRepair() {
+        val indexer = VideoIndexer(this)
+        lifecycleScope.launch {
+            val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
+
+            statusText.text = "🧹 Eski etiket çöpleri temizleniyor..."
+            // 1. Veritabanındaki tüm "skin, mouth, hair, muscle" gibi çöpleri tek seferde sil
+            db.clearJunkVisualLabels()
+
+            if (voskModel == null) {
+                statusText.text = "🎙️ Türkçe ses modeli yükleniyor, lütfen bekleyin..."
+                voskModel = withContext(Dispatchers.IO) {
+                    indexer.getOrInitVoskModel()
+                }
+            }
+
+            // 2. Sadece repliği taranmamış videoları al
+            val missingVideos = db.getVideosMissingVoice()
+            val total = missingVideos.size
+
+            if (total == 0) {
+                statusText.text = "✅ Tüm videoların replikleri hazır!"
+                filterList(searchInput.text.toString().trim())
+                Toast.makeText(this@MainActivity, "Eski etiketler temizlendi, tüm videolar hazır!", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+
+            statusText.text = "🎙️ Replikler taranıyor ($total video)..."
+
+            withContext(Dispatchers.IO) {
+                missingVideos.forEachIndexed { idx, item ->
+                    val file = File(item.filePath)
+                    if (file.exists() && voskModel != null) {
+                        try {
+                            val text = indexer.transcribeSingleVideo(file, voskModel!!)
+                            if (text.isNotBlank()) {
+                                db.updateSpokenText(item.filePath, text)
+                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                    }
+                    runOnUiThread {
+                        statusText.text = "Replik Çözülüyor (${idx + 1}/$total): ${item.fileName}"
+                    }
+                }
+            }
+
+            statusText.text = "✅ Hızlı onarım tamamlandı! Replikler güncellendi."
+            filterList(searchInput.text.toString().trim())
+            Toast.makeText(this@MainActivity, "Hatalar düzeltildi ve replikler eklendi!", Toast.LENGTH_SHORT).show()
         }
     }
 

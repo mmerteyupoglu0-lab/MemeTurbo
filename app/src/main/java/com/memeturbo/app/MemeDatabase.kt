@@ -27,7 +27,6 @@ interface MemeDao {
     """)
     suspend fun searchMemes(query: String): List<MemeVideo>
 
-    // Limitleri tamamen kaldırdık: 800+ videonun tamamı gelecek!
     @Query("SELECT * FROM meme_videos ORDER BY lastModified DESC")
     suspend fun getRecentMemes(): List<MemeVideo>
 
@@ -48,6 +47,17 @@ interface MemeDao {
 
     @Query("UPDATE meme_videos SET visualLabels = visualLabels || ' ' || :newTags WHERE filePath = :path")
     suspend fun appendCustomTags(path: String, newTags: String)
+
+    @Query("UPDATE meme_videos SET spokenText = :spokenText WHERE filePath = :path")
+    suspend fun updateSpokenText(path: String, spokenText: String)
+
+    // Eski taramalardan kalan tüm "skin, mouth, hair, muscle" İngilizce çöplerini tek saniyede siler
+    @Query("UPDATE meme_videos SET visualLabels = '' WHERE visualLabels LIKE '%skin%' OR visualLabels LIKE '%mouth%' OR visualLabels LIKE '%hair%' OR visualLabels LIKE '%muscle%'")
+    suspend fun clearJunkVisualLabels()
+
+    // Sadece henüz repliği (sesi) taranmamış videoları getirir (Hızlı onarım için)
+    @Query("SELECT * FROM meme_videos WHERE isVideo = 1 AND (spokenText IS NULL OR spokenText = '')")
+    suspend fun getVideosMissingVoice(): List<MemeVideo>
 
     @Query("SELECT COUNT(*) FROM meme_videos")
     suspend fun getCount(): Int

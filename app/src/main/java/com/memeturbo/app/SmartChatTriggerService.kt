@@ -8,6 +8,7 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.text.Editable
 import android.text.TextWatcher
 import android.util.TypedValue
@@ -16,6 +17,7 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.*
 import androidx.core.content.FileProvider
 import androidx.recyclerview.widget.GridLayoutManager
@@ -227,7 +229,8 @@ class SmartChatTriggerService : AccessibilityService() {
     }
 
     /**
-     * Instagram ve WhatsApp ile kusursuz uyumlu doğrudan paylaşım (Orijinal stabil akış).
+     * WhatsApp içinde doğrudan açık olan sohbete yapıştırır (kişi seçtirmeden!).
+     * Instagram ve diğer uygulamalarda standart paylaşım akışını kullanır.
      */
     private fun sendMediaDirectlyToChat(meme: MemeVideo) {
         val file = File(meme.filePath)
@@ -236,7 +239,7 @@ class SmartChatTriggerService : AccessibilityService() {
         val uri = FileProvider.getUriForFile(this, "${applicationContext.packageName}.fileprovider", file)
         val mime = if (meme.isVideo) "video/*" else "image/*"
 
-        // 1. Panoya kopyala (Kullanıcı manuel yapıştırmak isterse hazır)
+        // 1. Panoya kopyala
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val clip = ClipData.newUri(contentResolver, meme.fileName, uri)
         clipboard.setPrimaryClip(clip)
@@ -244,7 +247,26 @@ class SmartChatTriggerService : AccessibilityService() {
         // 2. Yüzen paneli kapat
         closeSearchPanel()
 
-        // 3. Instagram / WhatsApp doğrudan paylaşım intent'i başlat
+        // 3. WhatsApp ise doğrudan aktif sohbet kutusuna yapıştır!
+        val isWhatsApp = currentChatPackage?.contains("whatsapp", ignoreCase = true) == true
+        if (isWhatsApp) {
+            serviceScope.launch {
+                delay(200)
+                val focusedInput = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                val pasted = focusedInput?.performAction(AccessibilityNodeInfo.ACTION_PASTE) == true
+                if (!pasted) {
+                    launchShareIntent(mime, uri)
+                } else {
+                    Toast.makeText(this@SmartChatTriggerService, "Sohbete yapıştırıldı! 🚀", Toast.LENGTH_SHORT).show()
+                }
+            }
+        } else {
+            // Instagram ve diğerlerinde standart paylaşım penceresi
+            launchShareIntent(mime, uri)
+        }
+    }
+
+    private fun launchShareIntent(mime: String, uri: Uri) {
         val shareIntent = Intent(Intent.ACTION_SEND).apply {
             type = mime
             putExtra(Intent.EXTRA_STREAM, uri)

@@ -26,7 +26,7 @@ class VideoIndexer(private val context: Context) {
 
     data class AlbumInfo(val name: String, val count: Int, val isAll: Boolean = false)
 
-    // Sayfa isimlerini ve Instagram/TikTok filigranlarını kökten temizleyen filtre listesi
+    // Sayfa isimlerini, gereksiz filigranları temizleyen filtre listesi (H-Talks kullanıcının isteğiyle korundu!)
     private val watermarkPatterns = listOf(
         Regex("@[a-zA-Z0-9._]+", RegexOption.IGNORE_CASE),
         Regex("[0-9]*galerim[a-zA-Z0-9._]*", RegexOption.IGNORE_CASE),
@@ -41,13 +41,17 @@ class VideoIndexer(private val context: Context) {
         Regex(".*arsiv.*", RegexOption.IGNORE_CASE),
         Regex(".*reels.*", RegexOption.IGNORE_CASE),
         Regex(".*kesfet.*", RegexOption.IGNORE_CASE),
-        Regex(".*takip.*", RegexOption.IGNORE_CASE)
+        Regex(".*takip.*", RegexOption.IGNORE_CASE),
+        Regex(".*gatts.*", RegexOption.IGNORE_CASE),
+        Regex(".*inshot.*", RegexOption.IGNORE_CASE),
+        Regex(".*paqutex.*", RegexOption.IGNORE_CASE),
+        Regex(".*canerimo.*", RegexOption.IGNORE_CASE),
+        Regex(".*begenenler.*", RegexOption.IGNORE_CASE),
+        Regex(".*toosted.*", RegexOption.IGNORE_CASE),
+        Regex(".*ataner.*", RegexOption.IGNORE_CASE),
+        Regex(".*odunyanin.*", RegexOption.IGNORE_CASE)
     )
 
-    /**
-     * APK içerisindeki Türkçe Vosk ses modelini ilk kullanımda dahili hafızaya çıkartır.
-     * Yarım kalma hatalarına karşı .complete doğrulama dosyası kullanır.
-     */
     fun getOrInitVoskModel(): Model? {
         val destDir = File(context.filesDir, "vosk-model-small-tr")
         val markerFile = File(destDir, ".complete")
@@ -214,7 +218,6 @@ class VideoIndexer(private val context: Context) {
     }
 
     private suspend fun extractVideoData(file: File, voskModel: Model?): MemeVideo {
-        // 1. MUTLAK ÖNCELİK: TÜRKÇE SES VE REPLİK TANIMA!
         val spokenText = if (voskModel != null) {
             transcribeVideoAudio(file, voskModel)
         } else {
@@ -229,7 +232,6 @@ class VideoIndexer(private val context: Context) {
             retriever.setDataSource(file.absolutePath)
             durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
 
-            // Video içinde 3 farklı noktadan ekran yazısı (alt yazı) kontrolü
             val sampleTimesUs = listOf(500_000L, 2_000_000L, 5_000_000L)
             for (timeUs in sampleTimesUs) {
                 if (timeUs > durationMs * 1000L && timeUs > 500_000L) continue
@@ -259,10 +261,6 @@ class VideoIndexer(private val context: Context) {
         )
     }
 
-    /**
-     * Köşelerdeki gereksiz Instagram/TikTok filigranlarını, tek haneli sayıları ("8"),
-     * arka plan sembollerini ("s0", "d") ve sayfa kullanıcı adlarını temizler.
-     */
     private fun filterWatermarks(rawText: String): String {
         val lines = rawText.split("\n").map { it.trim() }.filter { it.isNotBlank() }
         val filtered = lines.filter { line ->
@@ -274,9 +272,12 @@ class VideoIndexer(private val context: Context) {
     }
 
     /**
-     * Videodaki konuşmaları / replikleri 16kHz Mono PCM'e dönüştürerek Vosk motoruna iletir.
-     * İlk 20 saniyelik ses parçasını çözmesi hem çok hızlıdır hem de repliği tam yakalar.
+     * Dışarıdan doğrudan tek bir videonun sesini çözmek için genel metod (Hızlı Onarım için).
      */
+    fun transcribeSingleVideo(videoFile: File, voskModel: Model): String {
+        return transcribeVideoAudio(videoFile, voskModel)
+    }
+
     private fun transcribeVideoAudio(videoFile: File, voskModel: Model): String {
         val extractor = MediaExtractor()
         val transcriptParts = mutableListOf<String>()
@@ -305,7 +306,6 @@ class VideoIndexer(private val context: Context) {
             val inSampleRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) format.getInteger(MediaFormat.KEY_SAMPLE_RATE) else 44100
             val channelCount = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 1
 
-            // Vosk Türkçe küçük modeli her zaman 16000 Hz Mono ses bekler!
             recognizer = Recognizer(voskModel, 16000f)
 
             codec = MediaCodec.createDecoderByType(mime)
@@ -342,7 +342,6 @@ class VideoIndexer(private val context: Context) {
                         outputBuffer.get(pcmBytes)
                         outputBuffer.clear()
 
-                        // Stereo ve 44.1/48kHz sesi Vosk'a uygun 16kHz Mono 16-bit PCM'e dönüştür
                         val resampled16k = convertTo16kMono(pcmBytes, inSampleRate, channelCount)
                         if (resampled16k.isNotEmpty()) {
                             if (recognizer.acceptWaveForm(resampled16k, resampled16k.size)) {
@@ -372,15 +371,10 @@ class VideoIndexer(private val context: Context) {
         return transcriptParts.joinToString(" ").trim()
     }
 
-    /**
-     * Stereo (veya çok kanallı) ve yüksek örnekleme hızlı (44.1k/48k) PCM sesini
-     * Vosk modelinin kabul ettiği 16 kHz Mono 16-bit PCM formatına dönüştürür.
-     */
     private fun convertTo16kMono(rawPcm: ByteArray, inSampleRate: Int, channels: Int): ByteArray {
         val totalShorts = rawPcm.size / 2
         if (totalShorts == 0) return ByteArray(0)
 
-        // 1. Mono Shorts çıkarımı (Kanal ortalaması)
         val monoShorts: ShortArray
         if (channels >= 2) {
             val frames = totalShorts / channels
@@ -403,7 +397,6 @@ class VideoIndexer(private val context: Context) {
             }
         }
 
-        // 2. 16000 Hz'e yeniden örnekleme (Resampling)
         val targetRate = 16000
         val ratio = inSampleRate.toDouble() / targetRate.toDouble()
         val outLen = (monoShorts.size / ratio).toInt()
