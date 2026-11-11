@@ -29,6 +29,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -51,6 +52,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var adapter: MemeGridAdapter
     private var availableAlbums = listOf<VideoIndexer.AlbumInfo>()
     private var currentFilter = 0
+    private var selectedAlbumFilter: String? = null
     private var voskModel: Model? = null
     private var isScanningOrRepairing = false
 
@@ -68,20 +70,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Üst bildirim çubuğu ve alttaki geri tuşu panelini uygulamanın koyu lacivert rengine uyarla (Bembeyaz kalmasın!)
-        window.statusBarColor = Color.parseColor("#1E293B")
-        window.navigationBarColor = Color.parseColor("#0F172A")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.insetsController?.setSystemBarsAppearance(
-                0,
-                WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
-                        WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
-            )
-        } else {
-            @Suppress("DEPRECATION")
-            window.decorView.systemUiVisibility = 0
-        }
 
         val root = FrameLayout(this).apply {
             setBackgroundColor(Color.parseColor("#0F172A"))
@@ -338,6 +326,13 @@ class MainActivity : AppCompatActivity() {
         setupInternalPlayerLayout(root)
 
         setContentView(root)
+        try {
+            window.statusBarColor = Color.parseColor("#1E293B")
+            window.navigationBarColor = Color.parseColor("#0F172A")
+            val insetsController = WindowCompat.getInsetsController(window, root)
+            insetsController.isAppearanceLightStatusBars = false
+            insetsController.isAppearanceLightNavigationBars = false
+        } catch (_: Throwable) {}
         setupBackButtonBehavior()
         checkPermissionAndLoadAlbums()
 
@@ -590,10 +585,22 @@ class MainActivity : AppCompatActivity() {
     private fun filterList(query: String, restoreScrollWhenEmpty: Boolean = false) {
         lifecycleScope.launch {
             val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
-            val rawList = when (currentFilter) {
+            val typeList = when (currentFilter) {
                 1 -> db.getVideoMemes()
                 2 -> db.getImageMemes()
                 else -> db.getAllMemes()
+            }
+            val rawList = if (selectedAlbumFilter == null) {
+                typeList
+            } else {
+                typeList.filter { it.albumName == selectedAlbumFilter }
+            }
+            if (!isScanningOrRepairing && selectedAlbumFilter != null && query.isEmpty()) {
+                statusText.text = if (rawList.isEmpty()) {
+                    "📁 $selectedAlbumFilter: Henüz taranmadı ('Yenileri Tara ⚡' ile tarayabilirsin)"
+                } else {
+                    "📁 $selectedAlbumFilter: ${rawList.size} medya hazır"
+                }
             }
 
             val filtered = if (query.isEmpty()) {
@@ -835,12 +842,34 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadAlbumsIntoSpinner() {
         lifecycleScope.launch {
+            val prevAlbumName = if (availableAlbums.isNotEmpty() && albumSpinner.selectedItemPosition in availableAlbums.indices) {
+                availableAlbums[albumSpinner.selectedItemPosition].name
+            } else {
+                null
+            }
+
             val indexer = VideoIndexer(this@MainActivity)
             availableAlbums = indexer.getAvailableAlbums()
 
             val names = availableAlbums.map { "${it.name} (${it.count} öğe)" }
             val spinnerAdapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, names)
             albumSpinner.adapter = spinnerAdapter
+
+            if (prevAlbumName != null) {
+                val idx = availableAlbums.indexOfFirst { it.name == prevAlbumName }
+                if (idx >= 0) albumSpinner.setSelection(idx)
+            }
+
+            albumSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    if (position in availableAlbums.indices) {
+                        val chosen = availableAlbums[position]
+                        selectedAlbumFilter = if (chosen.isAll) null else chosen.name
+                        filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false)
+                    }
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) {}
+            }
 
             filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false)
         }

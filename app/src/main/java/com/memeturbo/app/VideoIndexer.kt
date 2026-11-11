@@ -37,6 +37,7 @@ class VideoIndexer(private val context: Context) {
     private val db = MemeDatabase.getInstance(context).memeDao()
 
     data class AlbumInfo(val name: String, val count: Int, val isAll: Boolean = false)
+    data class GalleryMediaItem(val path: String, val name: String, val isVideo: Boolean, val albumName: String)
 
     companion object {
         // Japonca, Korece, Çince, Arapça karakterleri temizleyen Regex
@@ -429,6 +430,13 @@ class VideoIndexer(private val context: Context) {
      */
     suspend fun cleanExistingDatabaseRecords() = withContext(Dispatchers.IO) {
         val allMemes = db.getAllMemes()
+        val needsAlbumBackfill = allMemes.any { it.albumName.isBlank() }
+        val pathToAlbum = if (needsAlbumBackfill) {
+            queryGalleryMedia(AlbumInfo("all", 0, isAll = true)).associate { it.path to it.albumName }
+        } else {
+            emptyMap()
+        }
+
         for (item in allMemes) {
             val cleanedScreen = filterWatermarks(item.screenText)
             val cleanedVisual = cleanVisualLabelsString(item.visualLabels)
@@ -439,6 +447,12 @@ class VideoIndexer(private val context: Context) {
                     screenText = cleanedScreen,
                     visualLabels = cleanedVisual
                 )
+            }
+            if (item.albumName.isBlank()) {
+                val foundAlbum = pathToAlbum[item.filePath]
+                if (!foundAlbum.isNullOrBlank()) {
+                    db.updateAlbumName(item.filePath, foundAlbum)
+                }
             }
         }
     }
@@ -490,18 +504,18 @@ class VideoIndexer(private val context: Context) {
     ): Int = withContext(Dispatchers.IO) {
         val existingPaths = db.getAllIndexedPaths().toHashSet()
         val mediaList = queryGalleryMedia(albumInfo)
-        val newItems = mediaList.filter { it.first !in existingPaths }
+        val newItems = mediaList.filter { it.path !in existingPaths }
 
         val total = newItems.size
         newItems.forEachIndexed { index, item ->
-            val file = File(item.first)
-            onProgress(index + 1, total, item.second)
+            val file = File(item.path)
+            onProgress(index + 1, total, item.name)
             if (file.exists()) {
                 try {
-                    val metadata = if (item.third) {
-                        extractVideoData(file, voskModel)
+                    val metadata = if (item.isVideo) {
+                        extractVideoData(file, voskModel, item.albumName)
                     } else {
-                        extractImageData(file)
+                        extractImageData(file, item.albumName)
                     }
                     db.insertMeme(metadata)
                 } catch (e: Exception) {
@@ -512,43 +526,47 @@ class VideoIndexer(private val context: Context) {
         return@withContext total
     }
 
-    private fun queryGalleryMedia(albumInfo: AlbumInfo): List<Triple<String, String, Boolean>> {
-        val mediaList = mutableListOf<Triple<String, String, Boolean>>()
+    private fun queryGalleryMedia(albumInfo: AlbumInfo): List<GalleryMediaItem> {
+        val mediaList = mutableListOf<GalleryMediaItem>()
         val isAll = albumInfo.isAll
         val selection = if (isAll) null else "${MediaStore.MediaColumns.BUCKET_DISPLAY_NAME} = ?"
         val selectionArgs = if (isAll) null else arrayOf(albumInfo.name)
 
         context.contentResolver.query(
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-            arrayOf(MediaStore.Video.Media.DATA, MediaStore.Video.Media.DISPLAY_NAME),
+            arrayOf(MediaStore.Video.Media.DATA, MediaStore.Video.Media.DISPLAY_NAME, MediaStore.Video.Media.BUCKET_DISPLAY_NAME),
             selection, selectionArgs, "${MediaStore.Video.Media.DATE_MODIFIED} DESC"
         )?.use { cursor ->
             val dataIdx = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATA)
             val nameIdx = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
+            val bucketIdx = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
             while (cursor.moveToNext()) {
                 val path = cursor.getString(dataIdx) ?: continue
                 val name = cursor.getString(nameIdx) ?: "video"
-                mediaList.add(Triple(path, name, true))
+                val bucket = cursor.getString(bucketIdx) ?: ""
+                mediaList.add(GalleryMediaItem(path, name, true, bucket))
             }
         }
 
         context.contentResolver.query(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            arrayOf(MediaStore.Images.Media.DATA, MediaStore.Images.Media.DISPLAY_NAME),
+            arrayOf(MediaStore.Images.Media.DATA, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.BUCKET_DISPLAY_NAME),
             selection, selectionArgs, "${MediaStore.Images.Media.DATE_MODIFIED} DESC"
         )?.use { cursor ->
             val dataIdx = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATA)
             val nameIdx = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
+            val bucketIdx = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
             while (cursor.moveToNext()) {
                 val path = cursor.getString(dataIdx) ?: continue
                 val name = cursor.getString(nameIdx) ?: "image"
-                mediaList.add(Triple(path, name, false))
+                val bucket = cursor.getString(bucketIdx) ?: ""
+                mediaList.add(GalleryMediaItem(path, name, false, bucket))
             }
         }
         return mediaList
     }
 
-    suspend fun extractImageData(file: File): MemeVideo {
+    suspend fun extractImageData(file: File, albumName: String = ""): MemeVideo {
         var screenText = ""
         var visualScene = ""
 
@@ -577,11 +595,12 @@ class VideoIndexer(private val context: Context) {
             screenText = screenText,
             visualLabels = visualScene,
             isVideo = false,
-            lastModified = file.lastModified()
+            lastModified = file.lastModified(),
+            albumName = albumName
         )
     }
 
-    suspend fun extractVideoData(file: File, voskModel: Model?): MemeVideo {
+    suspend fun extractVideoData(file: File, voskModel: Model?, albumName: String = ""): MemeVideo {
         // 1. MUTLAK ÖNCELİK: TÜRKÇE SES VE REPLİK TANIMA!
         val spokenText = if (voskModel != null) {
             transcribeVideoAudio(file, voskModel)
@@ -628,7 +647,8 @@ class VideoIndexer(private val context: Context) {
             screenText = screenTexts.joinToString(" | "),
             visualLabels = sceneLabels.distinct().joinToString(" • "),
             isVideo = true,
-            lastModified = file.lastModified()
+            lastModified = file.lastModified(),
+            albumName = albumName
         )
     }
 

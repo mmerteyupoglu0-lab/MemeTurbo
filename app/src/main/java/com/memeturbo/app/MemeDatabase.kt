@@ -2,6 +2,8 @@ package com.memeturbo.app
 
 import android.content.Context
 import androidx.room.*
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Entity(tableName = "meme_videos")
 data class MemeVideo(
@@ -12,7 +14,8 @@ data class MemeVideo(
     val screenText: String,
     val visualLabels: String,
     val isVideo: Boolean,
-    val lastModified: Long
+    val lastModified: Long,
+    val albumName: String = ""
 )
 
 @Dao
@@ -39,6 +42,9 @@ interface MemeDao {
     @Query("SELECT * FROM meme_videos WHERE isVideo = 0 ORDER BY lastModified DESC")
     suspend fun getImageMemes(): List<MemeVideo>
 
+    @Query("SELECT DISTINCT albumName FROM meme_videos WHERE albumName != '' ORDER BY albumName ASC")
+    suspend fun getIndexedAlbumNames(): List<String>
+
     @Query("SELECT filePath FROM meme_videos")
     suspend fun getAllIndexedPaths(): List<String>
 
@@ -57,6 +63,9 @@ interface MemeDao {
     @Query("UPDATE meme_videos SET spokenText = :spokenText, screenText = :screenText, visualLabels = :visualLabels WHERE filePath = :path")
     suspend fun updateFields(path: String, spokenText: String, screenText: String, visualLabels: String)
 
+    @Query("UPDATE meme_videos SET albumName = :albumName WHERE filePath = :path")
+    suspend fun updateAlbumName(path: String, albumName: String)
+
     @Query("SELECT * FROM meme_videos WHERE isVideo = 1 AND (spokenText IS NULL OR spokenText = '')")
     suspend fun getVideosMissingVoice(): List<MemeVideo>
 
@@ -70,7 +79,7 @@ interface MemeDao {
     suspend fun getImageCount(): Int
 }
 
-@Database(entities = [MemeVideo::class], version = 2, exportSchema = false)
+@Database(entities = [MemeVideo::class], version = 3, exportSchema = false)
 abstract class MemeDatabase : RoomDatabase() {
     abstract fun memeDao(): MemeDao
 
@@ -78,13 +87,22 @@ abstract class MemeDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: MemeDatabase? = null
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE meme_videos ADD COLUMN albumName TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun getInstance(context: Context): MemeDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
                     context.applicationContext,
                     MemeDatabase::class.java,
                     "memeturbo_db"
-                ).build()
+                )
+                    .addMigrations(MIGRATION_2_3)
+                    .fallbackToDestructiveMigration()
+                    .build()
                 INSTANCE = instance
                 instance
             }
