@@ -64,8 +64,10 @@ class ScanForegroundService : Service() {
                 runIncrementalScan(VideoIndexer.AlbumInfo(albumName, 0, isAll))
             }
             ACTION_START_REPAIR -> {
-                startForegroundSafe("Sesler ve replikler çözülüyor...")
-                runVoiceRepair()
+                val albumName = intent.getStringExtra(EXTRA_ALBUM_NAME) ?: "🌟 Tüm Galeri (Hepsi)"
+                val isAll = intent.getBooleanExtra(EXTRA_ALBUM_IS_ALL, true)
+                startForegroundSafe("Zayıf ve altyazısız videolar onarılıyor...")
+                runVoiceRepair(VideoIndexer.AlbumInfo(albumName, 0, isAll))
             }
             ACTION_PAUSE_RESUME -> {
                 isPausedFlag = !isPausedFlag
