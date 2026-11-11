@@ -56,6 +56,7 @@ class MainActivity : AppCompatActivity() {
     private var selectedAlbumFilter: String? = null
     private var searchJob: Job? = null
     private var lastObservedTick = -1
+    private var cachedAllMemes: List<MemeVideo>? = null
 
     private lateinit var scanControlRow: LinearLayout
     private lateinit var pauseResumeBtn: Button
@@ -463,6 +464,7 @@ class MainActivity : AppCompatActivity() {
                 if (st.refreshTick != lastObservedTick) {
                     lastObservedTick = st.refreshTick
                     if (st.refreshTick > 0) {
+                        cachedAllMemes = null
                         VideoIndexer.clearAllCaches()
                         filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false, immediate = true)
                     }
@@ -474,22 +476,26 @@ class MainActivity : AppCompatActivity() {
     private fun startupClean() {
         lifecycleScope.launch {
             VideoIndexer(this@MainActivity).cleanExistingDatabaseRecords()
+            cachedAllMemes = null
             VideoIndexer.clearAllCaches()
             filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false, immediate = true)
         }
     }
 
     private fun refreshGalleryOnPullDown() {
-        if (ScanForegroundService.stateFlow.value.isRunning) {
-            swipeRefresh.isRefreshing = false
-            return
-        }
         lifecycleScope.launch {
             VideoIndexer(this@MainActivity).cleanExistingDatabaseRecords()
+            cachedAllMemes = null
             VideoIndexer.clearAllCaches()
-            loadAlbumsIntoSpinner()
+            filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false, immediate = true)
             swipeRefresh.isRefreshing = false
-            startIncrementalScanService()
+            if (!ScanForegroundService.stateFlow.value.isRunning) {
+                loadAlbumsIntoSpinner()
+                startIncrementalScanService()
+                Toast.makeText(this@MainActivity, "🔄 Galeri yenilendi!", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this@MainActivity, "🔄 Liste güncellendi (tarama sürüyor)", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -515,15 +521,17 @@ class MainActivity : AppCompatActivity() {
         searchJob?.cancel()
         searchJob = lifecycleScope.launch {
             if (!immediate && query.isNotEmpty()) {
-                delay(220) // Yazarken kasmayı ve ANR'yi %100 engeller
+                delay(80) // Anında tepki + akıcı yazma
             }
 
             val resultPair = withContext(Dispatchers.Default) {
-                val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
+                val allCached = cachedAllMemes ?: MemeDatabase.getInstance(this@MainActivity).memeDao().getAllMemes().also {
+                    cachedAllMemes = it
+                }
                 val typeList = when (currentFilter) {
-                    1 -> db.getVideoMemes()
-                    2 -> db.getImageMemes()
-                    else -> db.getAllMemes()
+                    1 -> allCached.filter { it.isVideo }
+                    2 -> allCached.filter { !it.isVideo }
+                    else -> allCached
                 }
                 val albumFiltered = if (selectedAlbumFilter == null) {
                     typeList
@@ -645,6 +653,7 @@ class MainActivity : AppCompatActivity() {
                     lifecycleScope.launch {
                         val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
                         db.updateSpokenText(meme.filePath, corrected)
+                        cachedAllMemes = null
                         VideoIndexer.invalidateCacheFor(meme.filePath)
                         Toast.makeText(this@MainActivity, "✅ Replik güncellendi!", Toast.LENGTH_SHORT).show()
                         filterList(searchInput.text.toString().trim(), immediate = true)
@@ -677,6 +686,9 @@ class MainActivity : AppCompatActivity() {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 dpToPx(260f)
             )
+            setOnClickListener {
+                if (isPlaying) pause() else start()
+            }
         }
 
         internalImageView = ImageView(this).apply {

@@ -66,6 +66,9 @@ interface MemeDao {
     @Query("UPDATE meme_videos SET albumName = :albumName WHERE filePath = :path")
     suspend fun updateAlbumName(path: String, albumName: String)
 
+    @Query("DELETE FROM meme_videos WHERE filePath = :path")
+    suspend fun deleteByPath(path: String)
+
     @Query("SELECT * FROM meme_videos WHERE isVideo = 1 AND (spokenText IS NULL OR spokenText = '')")
     suspend fun getVideosMissingVoice(): List<MemeVideo>
 

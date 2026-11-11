@@ -592,6 +592,11 @@ class VideoIndexer(private val context: Context) {
         }
 
         for (item in allMemes) {
+            if (!File(item.filePath).exists()) {
+                db.deleteByPath(item.filePath)
+                invalidateCacheFor(item.filePath)
+                continue
+            }
             val cleanedSpoken = autoCorrectTurkishReplik(item.spokenText)
             val cleanedScreen = filterWatermarks(item.screenText)
             val cleanedVisual = cleanVisualLabelsString(item.visualLabels)
@@ -1044,6 +1049,15 @@ class VideoIndexer(private val context: Context) {
 
         val shorts = ShortArray(numShorts)
         ByteBuffer.wrap(pcm16kBytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
+
+        // Hafif vokal netleştirme (gitar/bas uğultusunu azaltıp insan sesini öne çıkarır)
+        var prevSample = 0
+        for (i in 0 until numShorts) {
+            val cur = shorts[i].toInt()
+            val emphasized = (cur - (prevSample * 0.65f).toInt()).coerceIn(-32767, 32767)
+            prevSample = cur
+            shorts[i] = emphasized.toShort()
+        }
 
         var maxPeak = 0
         for (s in shorts) {

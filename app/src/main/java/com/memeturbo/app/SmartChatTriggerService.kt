@@ -207,6 +207,10 @@ class SmartChatTriggerService : AccessibilityService() {
                 dpToPx(150f),
                 Gravity.CENTER
             )
+            setOnPreparedListener { mp -> mp.isLooping = true }
+            setOnClickListener {
+                if (isPlaying) pause() else start()
+            }
         }
         videoViewRef = videoView
         previewBox.addView(videoView)
@@ -250,13 +254,14 @@ class SmartChatTriggerService : AccessibilityService() {
 
         val db = MemeDatabase.getInstance(this).memeDao()
 
+        var overlayCachedMemes: List<MemeVideo>? = null
         var searchJob: Job? = null
         fun refreshOverlayList(query: String, immediate: Boolean = false) {
             searchJob?.cancel()
             searchJob = serviceScope.launch {
-                if (!immediate && query.isNotEmpty()) delay(200)
+                if (!immediate && query.isNotEmpty()) delay(80)
                 val results = withContext(Dispatchers.Default) {
-                    val all = db.getAllMemes()
+                    val all = overlayCachedMemes ?: db.getAllMemes().also { overlayCachedMemes = it }
                     val albumFiltered = if (selectedOverlayAlbum == null) {
                         all
                     } else {
