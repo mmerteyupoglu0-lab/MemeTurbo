@@ -65,6 +65,33 @@ class VideoIndexer(private val context: Context) {
                 .replace('ç', 'c')
         }
 
+
+        private val phoneticReplikFixes = listOf(
+            Regex("\\b(oldu mu|oldumu|o rus bu|orospu|oruspu|olur mu|otobüs)\\s+(çocuk|cocuk|çocuğu|cocugu|çocukları|cocuklari)", RegexOption.IGNORE_CASE) to "orospu $2",
+            Regex("\\b(zeki adamı|zekayı|zeka da)\\s+budur", RegexOption.IGNORE_CASE) to "zeka da budur",
+            Regex("\\bfelaket\\s+(kokusunu|kokuşmuşluğun)\\s+(müslüman|müslümanım)", RegexOption.IGNORE_CASE) to "felaket kokuşmuşluğun",
+            Regex("\\b(yüze|yüzde)\\s+delili", RegexOption.IGNORE_CASE) to "yüce göt deliği",
+            Regex("\\b(ananı|anani|amını|amini)\\s+(sikerim|sikeyim|sikiyim|siker|skm)", RegexOption.IGNORE_CASE) to "$1 $2",
+            Regex("\\b(amına|amina|amuna)\\s+(koyayım|koyayim|koyim|koyayım|koduğum|koydugum)", RegexOption.IGNORE_CASE) to "amına $2",
+            Regex("\\b(elma mıyım|elmamıyım|elma miyim)\\s+(konuşcam|konuşacağım|konuscam)", RegexOption.IGNORE_CASE) to "elma mıyım konuşcam",
+            Regex("\\b(pişman mıyım|pisman miyim)\\s+(yoo|yo|yok)", RegexOption.IGNORE_CASE) to "pişman mıyım yoo",
+            Regex("\\b(kilo kedi|kilo verdi)\\b", RegexOption.IGNORE_CASE) to "kilo verdi",
+            Regex("\\b(bağ-kur lu|bağkurlu)\\b", RegexOption.IGNORE_CASE) to "bağırıyor"
+        )
+
+        /**
+         * Vosk ses motorunun argo/replikleri resmi Türkçe kelimelere benzeterek yaptığı
+         * tipik hataları (ör: 'oldu mu çocukları' -> 'orospu çocukları') bağlama göre otomatik düzeltir.
+         */
+        fun autoCorrectTurkishReplik(rawSpoken: String): String {
+            if (rawSpoken.isBlank() || rawSpoken == "​") return rawSpoken
+            var text = rawSpoken.trim()
+            for ((pattern, replacement) in phoneticReplikFixes) {
+                text = pattern.replace(text, replacement)
+            }
+            return text
+        }
+
         fun getCachedDisplaySnippet(meme: MemeVideo): String {
             val cacheKey = "${meme.filePath}|${meme.spokenText.hashCode()}|${meme.screenText.hashCode()}|${meme.visualLabels.hashCode()}"
             snippetCache[cacheKey]?.let { return it }
@@ -95,7 +122,7 @@ class VideoIndexer(private val context: Context) {
         fun smartSearchFilter(items: List<MemeVideo>, query: String): List<MemeVideo> {
             val normQ = normalizeTr(query.trim())
             if (normQ.isEmpty()) return items
-            val words = normQ.split(Regex("\s+")).filter { it.isNotBlank() }
+            val words = normQ.split(Regex("\\s+")).filter { it.isNotBlank() }
             if (words.isEmpty()) return items
 
             val scored = ArrayList<Pair<MemeVideo, Int>>(items.size / 4 + 8)
@@ -539,12 +566,13 @@ class VideoIndexer(private val context: Context) {
         }
 
         for (item in allMemes) {
+            val cleanedSpoken = autoCorrectTurkishReplik(item.spokenText)
             val cleanedScreen = filterWatermarks(item.screenText)
             val cleanedVisual = cleanVisualLabelsString(item.visualLabels)
-            if (cleanedScreen != item.screenText || cleanedVisual != item.visualLabels) {
+            if (cleanedSpoken != item.spokenText || cleanedScreen != item.screenText || cleanedVisual != item.visualLabels) {
                 db.updateFields(
                     path = item.filePath,
-                    spokenText = item.spokenText,
+                    spokenText = cleanedSpoken,
                     screenText = cleanedScreen,
                     visualLabels = cleanedVisual
                 )
@@ -918,7 +946,7 @@ class VideoIndexer(private val context: Context) {
             try { recognizer?.close() } catch (_: Exception) {}
             try { extractor.release() } catch (_: Exception) {}
         }
-        return transcriptParts.joinToString(" ").trim()
+        return autoCorrectTurkishReplik(transcriptParts.joinToString(" ").trim())
     }
 
     private fun resampleTo16kMonoBytes(rawPcm: ByteArray, inSampleRate: Int, channels: Int): ByteArray {
