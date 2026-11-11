@@ -27,6 +27,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.zip.ZipInputStream
 import kotlin.math.abs
+import java.util.concurrent.ConcurrentHashMap
 
 class VideoIndexer(private val context: Context) {
 
@@ -40,6 +41,106 @@ class VideoIndexer(private val context: Context) {
     data class GalleryMediaItem(val path: String, val name: String, val isVideo: Boolean, val albumName: String)
 
     companion object {
+
+        private val snippetCache = ConcurrentHashMap<String, String>()
+        private val searchBlobCache = ConcurrentHashMap<String, String>()
+
+        fun invalidateCacheFor(filePath: String) {
+            snippetCache.remove(filePath)
+            searchBlobCache.remove(filePath)
+        }
+
+        fun clearAllCaches() {
+            snippetCache.clear()
+            searchBlobCache.clear()
+        }
+
+        fun normalizeTr(text: String): String {
+            return text.lowercase()
+                .replace('ı', 'i')
+                .replace('ğ', 'g')
+                .replace('ü', 'u')
+                .replace('ş', 's')
+                .replace('ö', 'o')
+                .replace('ç', 'c')
+        }
+
+        fun getCachedDisplaySnippet(meme: MemeVideo): String {
+            val cacheKey = "${meme.filePath}|${meme.spokenText.hashCode()}|${meme.screenText.hashCode()}|${meme.visualLabels.hashCode()}"
+            snippetCache[cacheKey]?.let { return it }
+
+            val cleanSpoken = meme.spokenText.replace("​", "").trim()
+            val cleanTitle = cleanFileNameForDisplay(meme.fileName)
+            val cleanScreen = filterWatermarks(meme.screenText)
+            val cleanVisual = cleanVisualLabelsString(meme.visualLabels)
+
+            val snippet = when {
+                cleanSpoken.isNotBlank() -> "🗣️ $cleanSpoken"
+                meme.isVideo && cleanTitle.isNotBlank() -> "🎬 $cleanTitle"
+                cleanScreen.isNotBlank() -> "📝 $cleanScreen"
+                cleanTitle.isNotBlank() -> "🖼️ $cleanTitle"
+                cleanVisual.isNotBlank() -> if (cleanVisual.any { !it.isLetterOrDigit() && !it.isWhitespace() }) cleanVisual else "🏷️ $cleanVisual"
+                else -> if (meme.isVideo) "🎬 Video" else "🖼️ Görsel"
+            }
+            snippetCache[cacheKey] = snippet
+            return snippet
+        }
+
+        /**
+         * Akıllı Sıralamalı Arama:
+         * 1. Tüm kelimeleri tam içerenler en üstte çıkar.
+         * 2. İlk kelime yanlış algılanmışsa bile (ör: 'orospu çocukları' yazınca 'oldu mu çocukları'),
+         *    ikinci kelime veya kök eşleşenleri de hemen altına getirir!
+         */
+        fun smartSearchFilter(items: List<MemeVideo>, query: String): List<MemeVideo> {
+            val normQ = normalizeTr(query.trim())
+            if (normQ.isEmpty()) return items
+            val words = normQ.split(Regex("\s+")).filter { it.isNotBlank() }
+            if (words.isEmpty()) return items
+
+            val scored = ArrayList<Pair<MemeVideo, Int>>(items.size / 4 + 8)
+            for (item in items) {
+                val blobKey = "${item.filePath}|${item.spokenText.hashCode()}|${item.screenText.hashCode()}|${item.visualLabels.hashCode()}"
+                val blob = searchBlobCache.getOrPut(blobKey) {
+                    val cleanTitle = cleanFileNameForDisplay(item.fileName)
+                    val cleanScreen = filterWatermarks(item.screenText)
+                    val cleanVis = cleanVisualLabelsString(item.visualLabels)
+                    normalizeTr("${item.fileName} $cleanTitle ${item.spokenText} $cleanScreen $cleanVis")
+                }
+
+                if (words.size == 1) {
+                    val w = words[0]
+                    if (blob.contains(w)) {
+                        scored.add(item to 100)
+                    } else if (w.length >= 4 && blob.contains(w.substring(0, w.length - 1))) {
+                        scored.add(item to 40)
+                    }
+                } else {
+                    var matchedCount = 0
+                    var prefixMatchCount = 0
+                    for (w in words) {
+                        if (blob.contains(w)) {
+                            matchedCount++
+                        } else if (w.length >= 4) {
+                            val stem = w.substring(0, minOf(w.length - 1, 5))
+                            if (blob.contains(stem)) prefixMatchCount++
+                        }
+                    }
+                    if (matchedCount == words.size) {
+                        val exactBonus = if (blob.contains(normQ)) 50 else 0
+                        scored.add(item to (100 + exactBonus))
+                    } else if (matchedCount > 0 || prefixMatchCount > 0) {
+                        val partialScore = matchedCount * 20 + prefixMatchCount * 8
+                        if (partialScore >= 20) {
+                            scored.add(item to partialScore)
+                        }
+                    }
+                }
+            }
+            scored.sortByDescending { it.second }
+            return scored.map { it.first }
+        }
+
         // Japonca, Korece, Çince, Arapça karakterleri temizleyen Regex
         private val foreignScriptRegex = Regex("[\\p{IsHan}\\p{IsHiragana}\\p{IsKatakana}\\p{IsHangul}\\p{InArabic}]+")
 
@@ -525,6 +626,8 @@ class VideoIndexer(private val context: Context) {
         }
         return@withContext total
     }
+
+    fun queryGalleryMediaPublic(albumInfo: AlbumInfo): List<GalleryMediaItem> = queryGalleryMedia(albumInfo)
 
     private fun queryGalleryMedia(albumInfo: AlbumInfo): List<GalleryMediaItem> {
         val mediaList = mutableListOf<GalleryMediaItem>()

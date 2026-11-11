@@ -27,7 +27,6 @@ class MemeGridAdapter(
     private val items = mutableListOf<MemeVideo>()
     private val adapterScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
-    // 120 FPS akıcı kaydırma için Bellek Önbelleği (LruCache)
     companion object {
         private val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt()
         private val cacheSize = maxMemory / 8
@@ -144,12 +143,13 @@ class MemeGridAdapter(
     override fun onBindViewHolder(holder: MemeViewHolder, position: Int) {
         val meme = items[position]
 
+        holder.thumbJob?.cancel()
         val cached = memoryCache.get(meme.filePath)
         if (cached != null) {
             holder.thumbView.setImageBitmap(cached)
         } else {
             holder.thumbView.setImageBitmap(null)
-            adapterScope.launch {
+            holder.thumbJob = adapterScope.launch {
                 val bitmap = withContext(Dispatchers.IO) {
                     try {
                         if (meme.isVideo) {
@@ -163,32 +163,14 @@ class MemeGridAdapter(
                 }
                 if (bitmap != null) {
                     memoryCache.put(meme.filePath, bitmap)
-                    if (holder.adapterPosition == position) {
+                    if (holder.bindingAdapterPosition == position) {
                         holder.thumbView.setImageBitmap(bitmap)
                     }
                 }
             }
         }
 
-        val cleanSpoken = meme.spokenText.replace("\u200B", "").trim()
-        val cleanTitle = VideoIndexer.cleanFileNameForDisplay(meme.fileName)
-        val cleanScreen = VideoIndexer.filterWatermarks(meme.screenText)
-        val cleanVisual = VideoIndexer.cleanVisualLabelsString(meme.visualLabels)
-
-        // KART BAŞLIĞI ÖNCELİK SIRALAMASI:
-        // 1. Ses / Replik (🗣️) -> Videodaki konuşma her zaman 1. öncelik!
-        // 2. Temiz Dosya Başlığı (🎬) -> "Ben mi demissim onu", "Golem edit", "savaş cebeci bekliyoruz" vb.
-        // 3. Temiz Ekran Yazısı (📝) -> "Hz Adem Allaha hesap verirken", "Keşke anlatmasaydım" vb.
-        // 4. Saf Türkçe Sahne/Hayvan veya Özel Etiket (🐱 Kedi • 💡 Işık / Lazer, 🐵 Maymun, 🏷️ Arda Turan)
-        val snippet = when {
-            cleanSpoken.isNotBlank() -> "🗣️ $cleanSpoken"
-            meme.isVideo && cleanTitle.isNotBlank() -> "🎬 $cleanTitle"
-            cleanScreen.isNotBlank() -> "📝 $cleanScreen"
-            cleanTitle.isNotBlank() -> "🖼️ $cleanTitle"
-            cleanVisual.isNotBlank() -> if (cleanVisual.any { !it.isLetterOrDigit() && !it.isWhitespace() }) cleanVisual else "🏷️ $cleanVisual"
-            else -> if (meme.isVideo) "🎬 Video #${position + 1}" else "🖼️ Görsel #${position + 1}"
-        }
-        holder.transcriptView.text = snippet
+        holder.transcriptView.text = VideoIndexer.getCachedDisplaySnippet(meme)
 
         holder.playBtn.visibility = if (meme.isVideo) View.VISIBLE else View.GONE
         holder.playBtn.setOnClickListener { onPreviewClick(meme) }
@@ -204,6 +186,7 @@ class MemeGridAdapter(
         val transcriptView: TextView,
         val playBtn: Button,
         val sendBtn: Button,
-        val editTagBtn: TextView
+        val editTagBtn: TextView,
+        var thumbJob: Job? = null
     ) : RecyclerView.ViewHolder(view)
 }

@@ -18,9 +18,9 @@ import android.text.TextWatcher
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
-import android.view.WindowInsetsController
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
 import androidx.activity.OnBackPressedCallback
@@ -35,9 +35,10 @@ import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.vosk.Model
 import java.io.File
 
 class MainActivity : AppCompatActivity() {
@@ -53,10 +54,13 @@ class MainActivity : AppCompatActivity() {
     private var availableAlbums = listOf<VideoIndexer.AlbumInfo>()
     private var currentFilter = 0
     private var selectedAlbumFilter: String? = null
-    private var voskModel: Model? = null
-    private var isScanningOrRepairing = false
+    private var searchJob: Job? = null
+    private var lastObservedTick = -1
 
-    // Arama yapmadan önceki son kaydırma (scroll) konumunu hafızada tutar
+    private lateinit var scanControlRow: LinearLayout
+    private lateinit var pauseResumeBtn: Button
+    private lateinit var stopScanBtn: Button
+
     private var savedScrollPosition = 0
     private var savedScrollOffset = 0
 
@@ -67,6 +71,7 @@ class MainActivity : AppCompatActivity() {
     private var internalPlayerLayout: FrameLayout? = null
     private var internalVideoView: VideoView? = null
     private var internalImageView: ImageView? = null
+    private var currentPreviewMeme: MemeVideo? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -92,7 +97,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val privacyBanner = TextView(this).apply {
-            text = "🔒 %100 Çevrimdışı & Güvenli: Videolarınız cihazınızda işlenir.\n🎙️ 1. Öncelik Replik: Konuşmalar ve temiz başlıklar otomatik algılanır."
+            text = "🔒 %100 Çevrimdışı & Güvenli: Ekran kapalıyken bile arka planda tarar.\n🎙️ 1. Öncelik Replik: Konuşmalar dinlenir, yanlışsa ✏️ ile 1 dokunuşta düzeltilir."
             textSize = 12f
             setTextColor(Color.parseColor("#38BDF8"))
             setPadding(0, dpToPx(6f), 0, dpToPx(8f))
@@ -136,9 +141,7 @@ class MainActivity : AppCompatActivity() {
                 setColor(Color.parseColor("#4F46E5"))
             }
             layoutParams = LinearLayout.LayoutParams(0, dpToPx(34f), 1f)
-            setOnClickListener {
-                showXiaomiPermissionGuide()
-            }
+            setOnClickListener { showXiaomiPermissionGuide() }
         }
 
         setupRow.addView(overlayCheck)
@@ -151,7 +154,7 @@ class MainActivity : AppCompatActivity() {
         val scanRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dpToPx(16f), dpToPx(10f), dpToPx(16f), dpToPx(8f))
+            setPadding(dpToPx(16f), dpToPx(10f), dpToPx(16f), dpToPx(6f))
         }
 
         albumSpinner = Spinner(this).apply {
@@ -173,7 +176,7 @@ class MainActivity : AppCompatActivity() {
                 setColor(Color.parseColor("#16A34A"))
             }
             layoutParams = LinearLayout.LayoutParams(0, dpToPx(40f), 1f).apply { rightMargin = dpToPx(6f) }
-            setOnClickListener { startIncrementalScan() }
+            setOnClickListener { startIncrementalScanService() }
         }
 
         val repairBtn = Button(this).apply {
@@ -186,7 +189,7 @@ class MainActivity : AppCompatActivity() {
                 setColor(Color.parseColor("#D97706"))
             }
             layoutParams = LinearLayout.LayoutParams(0, dpToPx(40f), 1f)
-            setOnClickListener { startQuickRepair() }
+            setOnClickListener { startRepairService() }
         }
 
         scanRow.addView(albumSpinner)
@@ -194,8 +197,53 @@ class MainActivity : AppCompatActivity() {
         scanRow.addView(repairBtn)
         mainContainer.addView(scanRow)
 
+        // Duraklat / Devam Et ve Durdur Kontrol Satırı (Tarama çalışırken görünür)
+        scanControlRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            visibility = View.GONE
+            setPadding(dpToPx(16f), 0, dpToPx(16f), dpToPx(6f))
+        }
+
+        pauseResumeBtn = Button(this).apply {
+            text = "⏸️ Duraklat"
+            textSize = 11f
+            setTextColor(Color.WHITE)
+            isAllCaps = false
+            background = GradientDrawable().apply {
+                cornerRadius = dpToPx(10f).toFloat()
+                setColor(Color.parseColor("#475569"))
+            }
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34f), 1f).apply { rightMargin = dpToPx(6f) }
+            setOnClickListener {
+                startService(Intent(this@MainActivity, ScanForegroundService::class.java).apply {
+                    action = ScanForegroundService.ACTION_PAUSE_RESUME
+                })
+            }
+        }
+
+        stopScanBtn = Button(this).apply {
+            text = "⏹️ Durdur"
+            textSize = 11f
+            setTextColor(Color.WHITE)
+            isAllCaps = false
+            background = GradientDrawable().apply {
+                cornerRadius = dpToPx(10f).toFloat()
+                setColor(Color.parseColor("#DC2626"))
+            }
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34f), 1f)
+            setOnClickListener {
+                startService(Intent(this@MainActivity, ScanForegroundService::class.java).apply {
+                    action = ScanForegroundService.ACTION_STOP
+                })
+            }
+        }
+
+        scanControlRow.addView(pauseResumeBtn)
+        scanControlRow.addView(stopScanBtn)
+        mainContainer.addView(scanControlRow)
+
         statusText = TextView(this).apply {
-            text = "🎙️ Ses tanıma motoru hazırlanıyor..."
+            text = "Galeri hazırlanıyor..."
             textSize = 12f
             setTextColor(Color.parseColor("#38BDF8"))
             setPadding(dpToPx(16f), 0, dpToPx(16f), dpToPx(8f))
@@ -216,7 +264,6 @@ class MainActivity : AppCompatActivity() {
         tabRow.addView(tabImagesBtn)
         mainContainer.addView(tabRow)
 
-        // Arama Kutusu + Hızlı Temizleme (✕) Butonu
         val searchBoxContainer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -234,8 +281,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Klavye açıkken bile Geri tuşuna basıldığında uygulamadan atmak yerine
-        // aramayı temizleyip en son kaydırılan konuma döndüren özel EditText!
         searchInput = object : EditText(this) {
             override fun onKeyPreIme(keyCode: Int, event: KeyEvent?): Boolean {
                 if (keyCode == KeyEvent.KEYCODE_BACK && event?.action == KeyEvent.ACTION_UP) {
@@ -267,9 +312,7 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.parseColor("#94A3B8"))
             visibility = View.GONE
             setPadding(dpToPx(8f), dpToPx(6f), dpToPx(4f), dpToPx(6f))
-            setOnClickListener {
-                clearSearchAndRestorePosition()
-            }
+            setOnClickListener { clearSearchAndRestorePosition() }
         }
 
         searchBoxContainer.addView(searchInput)
@@ -285,10 +328,21 @@ class MainActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
+            // İlk kaydırma veya liste dokunuşunda klavyeyi anında gizle!
+            setOnTouchListener { _, event ->
+                if (event.action == MotionEvent.ACTION_DOWN) {
+                    hideKeyboard()
+                }
+                false
+            }
             addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                    if (newState == RecyclerView.SCROLL_STATE_DRAGGING) {
+                        hideKeyboard()
+                    }
+                }
                 override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
                     super.onScrolled(recyclerView, dx, dy)
-                    // Sadece arama kutusu boşken kullanıcının gezindiği yeri kaydet
                     if (searchInput.text.isNullOrEmpty()) {
                         val pos = gridLayoutManager.findFirstVisibleItemPosition()
                         if (pos != RecyclerView.NO_POSITION) {
@@ -301,13 +355,21 @@ class MainActivity : AppCompatActivity() {
         }
 
         adapter = MemeGridAdapter(
-            onPreviewClick = { meme -> showInternalPlayer(meme) },
-            onSendClick = { meme -> shareMemeMedia(meme) },
-            onEditTagsClick = { meme -> showEditTagsDialog(meme) }
+            onPreviewClick = { meme ->
+                hideKeyboard()
+                showInternalPlayer(meme)
+            },
+            onSendClick = { meme ->
+                hideKeyboard()
+                shareMemeMedia(meme)
+            },
+            onEditTagsClick = { meme ->
+                hideKeyboard()
+                showEditTagsDialog(meme)
+            }
         )
         galleryRecycler.adapter = adapter
 
-        // Yukarıdan Aşağı Kaydırırken Sayfa Yenileme (Pull-to-Refresh)
         swipeRefresh = SwipeRefreshLayout(this).apply {
             setColorSchemeColors(Color.parseColor("#38BDF8"), Color.parseColor("#16A34A"))
             setProgressBackgroundColorSchemeColor(Color.parseColor("#1E293B"))
@@ -315,9 +377,7 @@ class MainActivity : AppCompatActivity() {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 0, 1f
             ).apply { setMargins(dpToPx(8f), 0, dpToPx(8f), 0) }
-            setOnRefreshListener {
-                refreshGalleryOnPullDown()
-            }
+            setOnRefreshListener { refreshGalleryOnPullDown() }
         }
         swipeRefresh.addView(galleryRecycler)
         mainContainer.addView(swipeRefresh)
@@ -333,43 +393,41 @@ class MainActivity : AppCompatActivity() {
             insetsController.isAppearanceLightStatusBars = false
             insetsController.isAppearanceLightNavigationBars = false
         } catch (_: Throwable) {}
+
         setupBackButtonBehavior()
         checkPermissionAndLoadAlbums()
+        observeScanServiceState()
 
         searchInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                 val q = s?.toString()?.trim() ?: ""
                 clearSearchBtn.visibility = if (q.isNotEmpty()) View.VISIBLE else View.GONE
-                filterList(q, restoreScrollWhenEmpty = q.isEmpty())
+                filterList(q, restoreScrollWhenEmpty = q.isEmpty(), immediate = false)
             }
             override fun afterTextChanged(s: Editable?) {}
         })
 
         updateTabColors()
-        startupCleanAndInitVosk()
+        startupClean()
     }
 
-    /**
-     * Geri tuşuna basıldığında uygulamadan atmak yerine:
-     * 1. Video önizleme açıksa onu kapatır.
-     * 2. Arama kutusunda yazı varsa yazıyı silip en son kaydırılan konuma geri götürür.
-     * 3. Alt sekmedeyse Tümü sekmesine döner.
-     */
+    private fun hideKeyboard() {
+        searchInput.clearFocus()
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.hideSoftInputFromWindow(searchInput.windowToken, 0)
+    }
+
     private fun setupBackButtonBehavior() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 when {
-                    internalPlayerLayout?.visibility == View.VISIBLE -> {
-                        hideInternalPlayer()
-                    }
-                    !searchInput.text.isNullOrEmpty() -> {
-                        clearSearchAndRestorePosition()
-                    }
+                    internalPlayerLayout?.visibility == View.VISIBLE -> hideInternalPlayer()
+                    !searchInput.text.isNullOrEmpty() -> clearSearchAndRestorePosition()
                     currentFilter != 0 -> {
                         currentFilter = 0
                         updateTabColors()
-                        filterList("", restoreScrollWhenEmpty = true)
+                        filterList("", restoreScrollWhenEmpty = true, immediate = true)
                     }
                     else -> {
                         isEnabled = false
@@ -382,240 +440,105 @@ class MainActivity : AppCompatActivity() {
 
     private fun clearSearchAndRestorePosition() {
         searchInput.setText("")
-        searchInput.clearFocus()
-        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-        imm?.hideSoftInputFromWindow(searchInput.windowToken, 0)
-        filterList("", restoreScrollWhenEmpty = true)
+        hideKeyboard()
+        filterList("", restoreScrollWhenEmpty = true, immediate = true)
     }
 
-    /**
-     * Uygulama açılır açılmaz mevcut veritabanındaki tüm Korece/Japonca ve İngilizce çöpleri
-     * 0.2 saniyede temizler, ardından Türkçe Vosk ses modelini hazırlar.
-     */
-    private fun startupCleanAndInitVosk() {
-        val indexer = VideoIndexer(this)
+    private fun observeScanServiceState() {
         lifecycleScope.launch {
-            statusText.text = "🧹 Mevcut liste temizleniyor..."
-            indexer.cleanExistingDatabaseRecords()
-            filterList(searchInput.text.toString().trim())
-
-            voskModel = withContext(Dispatchers.IO) {
-                indexer.getOrInitVoskModel { msg ->
-                    runOnUiThread { statusText.text = msg }
+            ScanForegroundService.stateFlow.collect { st ->
+                scanControlRow.visibility = if (st.isRunning) View.VISIBLE else View.GONE
+                pauseResumeBtn.text = if (st.isPaused) "▶️ Devam Et" else "⏸️ Duraklat"
+                if (st.statusMessage.isNotBlank()) {
+                    statusText.text = st.statusMessage
                 }
-            }
-            val totalDb = MemeDatabase.getInstance(this@MainActivity).memeDao().getCount()
-            if (voskModel != null) {
-                statusText.text = "🎙️ Türkçe Ses Motoru Aktif! ($totalDb medya hazır)"
-            } else {
-                statusText.text = "Kayıtlı: $totalDb medya hazır"
+                if (st.refreshTick != lastObservedTick) {
+                    lastObservedTick = st.refreshTick
+                    if (st.refreshTick > 0) {
+                        VideoIndexer.clearAllCaches()
+                        filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false, immediate = true)
+                    }
+                }
             }
         }
     }
 
-    /**
-     * En üstteyken parmağı yukarıdan aşağı kaydırınca (Pull-to-Refresh)
-     * sadece yeni eklenen medyaları tarar ve listeyi tazeler!
-     */
+    private fun startupClean() {
+        lifecycleScope.launch {
+            VideoIndexer(this@MainActivity).cleanExistingDatabaseRecords()
+            VideoIndexer.clearAllCaches()
+            filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false, immediate = true)
+        }
+    }
+
     private fun refreshGalleryOnPullDown() {
-        if (isScanningOrRepairing) {
+        if (ScanForegroundService.stateFlow.value.isRunning) {
             swipeRefresh.isRefreshing = false
             return
         }
-        val indexer = VideoIndexer(this)
         lifecycleScope.launch {
-            indexer.cleanExistingDatabaseRecords()
-            if (availableAlbums.isNotEmpty()) {
-                val selectedAlbum = availableAlbums[albumSpinner.selectedItemPosition]
-                val addedCount = indexer.indexNewMediaOnly(selectedAlbum, voskModel) { current, total, name ->
-                    runOnUiThread {
-                        statusText.text = "Yeni eklenen taranıyor ($current/$total): $name"
-                    }
-                }
-                val totalDb = MemeDatabase.getInstance(this@MainActivity).memeDao().getCount()
-                statusText.text = if (addedCount > 0) {
-                    "✅ $addedCount yeni medya eklendi! (Toplam: $totalDb)"
-                } else {
-                    "✨ Galeri güncel! ($totalDb medya hazır)"
-                }
-            }
+            VideoIndexer(this@MainActivity).cleanExistingDatabaseRecords()
+            VideoIndexer.clearAllCaches()
             loadAlbumsIntoSpinner()
-            filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false)
             swipeRefresh.isRefreshing = false
+            startIncrementalScanService()
         }
     }
 
-    /**
-     * "Yenileri Tara ⚡": 800 videoyu baştan tarayıp şarjı bitirmek yerine,
-     * sadece galeriye yeni eklenen videoları/fotoğrafları bulup tarar!
-     */
-    private fun startIncrementalScan() {
-        if (availableAlbums.isEmpty() || isScanningOrRepairing) return
+    private fun startIncrementalScanService() {
+        if (availableAlbums.isEmpty()) return
         val selectedAlbum = availableAlbums[albumSpinner.selectedItemPosition]
-        val indexer = VideoIndexer(this)
-        isScanningOrRepairing = true
-
-        lifecycleScope.launch {
-            try {
-                if (voskModel == null) {
-                    statusText.text = "🎙️ Türkçe ses modeli yükleniyor..."
-                    voskModel = withContext(Dispatchers.IO) {
-                        indexer.getOrInitVoskModel { msg -> runOnUiThread { statusText.text = msg } }
-                    }
-                }
-
-                statusText.text = "${selectedAlbum.name} içinde yeni medyalar kontrol ediliyor..."
-                val addedCount = indexer.indexNewMediaOnly(
-                    albumInfo = selectedAlbum,
-                    voskModel = voskModel
-                ) { current, total, name ->
-                    runOnUiThread {
-                        statusText.text = "Yeni Medya Taranıyor ($current/$total): $name"
-                    }
-                }
-
-                val totalDb = MemeDatabase.getInstance(this@MainActivity).memeDao().getCount()
-                if (addedCount == 0) {
-                    statusText.text = "✨ Yeni eklenen medya yok, tümü kayıtlı ($totalDb medya). Replikler için '🔧 Sesleri Çöz'e basın."
-                    Toast.makeText(this@MainActivity, "Tüm medyalar zaten ekli! Replik onarımı için 'Sesleri Çöz' butonunu kullanabilirsin.", Toast.LENGTH_LONG).show()
-                } else {
-                    statusText.text = "✅ $addedCount yeni medya tarandı! (Toplam: $totalDb)"
-                    Toast.makeText(this@MainActivity, "$addedCount yeni medya eklendi!", Toast.LENGTH_SHORT).show()
-                }
-                loadAlbumsIntoSpinner()
-                filterList(searchInput.text.toString().trim())
-            } finally {
-                isScanningOrRepairing = false
-            }
+        val intent = Intent(this, ScanForegroundService::class.java).apply {
+            action = ScanForegroundService.ACTION_START_SCAN
+            putExtra(ScanForegroundService.EXTRA_ALBUM_NAME, selectedAlbum.name)
+            putExtra(ScanForegroundService.EXTRA_ALBUM_IS_ALL, selectedAlbum.isAll)
         }
+        ContextCompat.startForegroundService(this, intent)
     }
 
-    /**
-     * "🔧 Sesleri Çöz": Eski etiket çöplerini temizler ve henüz repliği (sesi)
-     * çözülmemiş videoların konuşmalarını (ve sessizse Türkçe hayvan/sahne bilgisini) çıkarır!
-     */
-    private fun startQuickRepair() {
-        if (isScanningOrRepairing) return
-        val indexer = VideoIndexer(this)
-        isScanningOrRepairing = true
+    private fun startRepairService() {
+        val intent = Intent(this, ScanForegroundService::class.java).apply {
+            action = ScanForegroundService.ACTION_START_REPAIR
+        }
+        ContextCompat.startForegroundService(this, intent)
+    }
 
-        lifecycleScope.launch {
-            try {
+    private fun filterList(query: String, restoreScrollWhenEmpty: Boolean = false, immediate: Boolean = false) {
+        searchJob?.cancel()
+        searchJob = lifecycleScope.launch {
+            if (!immediate && query.isNotEmpty()) {
+                delay(220) // Yazarken kasmayı ve ANR'yi %100 engeller
+            }
+
+            val resultPair = withContext(Dispatchers.Default) {
                 val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
-
-                statusText.text = "🧹 Korece/Japonca ve eski etiket çöpleri temizleniyor..."
-                indexer.cleanExistingDatabaseRecords()
-                filterList(searchInput.text.toString().trim())
-
-                if (voskModel == null) {
-                    statusText.text = "📦 Türkçe ses modeli çıkartılıyor, lütfen bekleyin..."
-                    voskModel = withContext(Dispatchers.IO) {
-                        indexer.getOrInitVoskModel { msg -> runOnUiThread { statusText.text = msg } }
-                    }
+                val typeList = when (currentFilter) {
+                    1 -> db.getVideoMemes()
+                    2 -> db.getImageMemes()
+                    else -> db.getAllMemes()
                 }
-
-                if (voskModel == null) {
-                    statusText.text = "⚠️ Ses modeli yüklenemedi, ancak tüm başlıklar temizlendi!"
-                    Toast.makeText(this@MainActivity, "Başlıklar temizlendi!", Toast.LENGTH_SHORT).show()
-                    return@launch
+                val albumFiltered = if (selectedAlbumFilter == null) {
+                    typeList
+                } else {
+                    typeList.filter { it.albumName == selectedAlbumFilter }
                 }
-
-                val missingVideos = db.getVideosMissingVoice()
-                val total = missingVideos.size
-
-                if (total == 0) {
-                    statusText.text = "✅ Tüm videoların ses/replik taraması tamamlanmış!"
-                    filterList(searchInput.text.toString().trim())
-                    Toast.makeText(this@MainActivity, "Tüm videolar hazır!", Toast.LENGTH_SHORT).show()
-                    return@launch
+                val finalItems = if (query.isEmpty()) {
+                    albumFiltered
+                } else {
+                    VideoIndexer.smartSearchFilter(albumFiltered, query)
                 }
-
-                statusText.text = "🎙️ Replikler dinleniyor (0/$total)..."
-
-                withContext(Dispatchers.IO) {
-                    missingVideos.forEachIndexed { idx, item ->
-                        val file = File(item.filePath)
-                        if (file.exists()) {
-                            try {
-                                val text = indexer.transcribeSingleVideo(file, voskModel!!)
-                                val cleanTitle = VideoIndexer.cleanFileNameForDisplay(item.fileName)
-                                val cleanScreen = VideoIndexer.filterWatermarks(item.screenText)
-                                var cleanVis = VideoIndexer.cleanVisualLabelsString(item.visualLabels)
-
-                                // Eğer videoda konuşma yoksa, temiz dosya adı yoksa ve yazı yoksa:
-                                // "🐱 Kedi • 💡 Işık / Lazer" gibi Saf Türkçe sahne etiketini bul!
-                                if (text.isBlank() && cleanTitle.isBlank() && cleanScreen.isBlank() && cleanVis.isBlank()) {
-                                    cleanVis = indexer.detectSceneForVideoFile(file)
-                                }
-
-                                // Tekrar tekrar tarayıp şarj tüketmemesi için sessiz videoları görünmez işaretle ("\u200B")
-                                val savedSpoken = if (text.isNotBlank()) text else "\u200B"
-                                db.updateFields(
-                                    path = item.filePath,
-                                    spokenText = savedSpoken,
-                                    screenText = cleanScreen,
-                                    visualLabels = cleanVis
-                                )
-                            } catch (e: Exception) {
-                                e.printStackTrace()
-                            }
-                        }
-
-                        runOnUiThread {
-                            statusText.text = "🎙️ Replik Çözülüyor (${idx + 1}/$total): ${VideoIndexer.cleanFileNameForDisplay(item.fileName).ifEmpty { item.fileName.take(20) }}"
-                        }
-                        // Her 10 videoda bir ekranı canlı güncelle
-                        if ((idx + 1) % 10 == 0) {
-                            withContext(Dispatchers.Main) {
-                                filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false)
-                            }
-                        }
-                    }
-                }
-
-                statusText.text = "✅ Tüm replikler ve açıklamalar güncellendi!"
-                filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false)
-                Toast.makeText(this@MainActivity, "Replikler ve açıklamalar başarıyla güncellendi!", Toast.LENGTH_SHORT).show()
-            } finally {
-                isScanningOrRepairing = false
+                Pair(finalItems, albumFiltered.size)
             }
-        }
-    }
 
-    private fun filterList(query: String, restoreScrollWhenEmpty: Boolean = false) {
-        lifecycleScope.launch {
-            val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
-            val typeList = when (currentFilter) {
-                1 -> db.getVideoMemes()
-                2 -> db.getImageMemes()
-                else -> db.getAllMemes()
-            }
-            val rawList = if (selectedAlbumFilter == null) {
-                typeList
-            } else {
-                typeList.filter { it.albumName == selectedAlbumFilter }
-            }
-            if (!isScanningOrRepairing && selectedAlbumFilter != null && query.isEmpty()) {
-                statusText.text = if (rawList.isEmpty()) {
+            adapter.submitList(resultPair.first)
+
+            if (!ScanForegroundService.stateFlow.value.isRunning && selectedAlbumFilter != null && query.isEmpty()) {
+                statusText.text = if (resultPair.second == 0) {
                     "📁 $selectedAlbumFilter: Henüz taranmadı ('Yenileri Tara ⚡' ile tarayabilirsin)"
                 } else {
-                    "📁 $selectedAlbumFilter: ${rawList.size} medya hazır"
+                    "📁 $selectedAlbumFilter: ${resultPair.second} medya hazır"
                 }
             }
-
-            val filtered = if (query.isEmpty()) {
-                rawList
-            } else {
-                val searchWords = normalizeText(query).split("\\s+".toRegex()).filter { it.isNotBlank() }
-                rawList.filter { item ->
-                    val cleanTitle = VideoIndexer.cleanFileNameForDisplay(item.fileName)
-                    val cleanScreen = VideoIndexer.filterWatermarks(item.screenText)
-                    val cleanVis = VideoIndexer.cleanVisualLabelsString(item.visualLabels)
-                    val combined = normalizeText("${item.fileName} $cleanTitle ${item.spokenText} $cleanScreen $cleanVis")
-                    searchWords.all { word -> combined.contains(word) }
-                }
-            }
-            adapter.submitList(filtered)
 
             if (query.isEmpty() && restoreScrollWhenEmpty && savedScrollPosition > 0) {
                 galleryRecycler.post {
@@ -623,16 +546,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-    }
-
-    private fun normalizeText(text: String): String {
-        return text.lowercase()
-            .replace('ı', 'i')
-            .replace('ğ', 'g')
-            .replace('ü', 'u')
-            .replace('ş', 's')
-            .replace('ö', 'o')
-            .replace('ç', 'c')
     }
 
     private fun createFilterTab(title: String, filterId: Int): Button {
@@ -647,7 +560,7 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener {
                 currentFilter = filterId
                 updateTabColors()
-                filterList(searchInput.text.toString().trim())
+                filterList(searchInput.text.toString().trim(), immediate = true)
             }
         }
     }
@@ -690,22 +603,39 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun showEditTagsDialog(meme: MemeVideo) {
+    /**
+     * Videonun doğru repliğini / arama kelimesini 1 dokunuşta düzeltir!
+     * Eğer o an arama kutusunda yazı varsa (ör: "orospu çocukları"), otomatik kutuya hazır getirir.
+     */
+    private fun showEditTagsDialog(meme: MemeVideo, prefillFromSearch: Boolean = false) {
+        val currentQuery = searchInput.text?.toString()?.trim() ?: ""
+        val currentSpoken = meme.spokenText.replace("\u200B", "").trim()
+        val initialText = when {
+            prefillFromSearch && currentQuery.isNotBlank() -> currentQuery
+            currentSpoken.isNotBlank() -> currentSpoken
+            else -> ""
+        }
+
         val input = EditText(this).apply {
-            hint = "Örn: Arda Turan, lazere bakan kedi, çıldırma"
+            hint = "Doğru replik veya arama kelimesi (Örn: orospu çocukları)"
+            setText(initialText)
+            setSelection(text.length)
             setTextColor(Color.WHITE)
             setHintTextColor(Color.GRAY)
         }
+
         AlertDialog.Builder(this)
-            .setTitle("✏️ Videoya Arama Kelimesi Ekle")
+            .setTitle("✏️ Doğru Repliği / Başlığı Kaydet")
             .setView(input)
             .setPositiveButton("Kaydet") { _, _ ->
-                val newTags = input.text.toString().trim()
-                if (newTags.isNotBlank()) {
+                val corrected = input.text.toString().trim()
+                if (corrected.isNotBlank()) {
                     lifecycleScope.launch {
-                        MemeDatabase.getInstance(this@MainActivity).memeDao().appendCustomTags(meme.filePath, newTags)
-                        Toast.makeText(this@MainActivity, "Etiket eklendi!", Toast.LENGTH_SHORT).show()
-                        filterList(searchInput.text.toString().trim())
+                        val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
+                        db.updateSpokenText(meme.filePath, corrected)
+                        VideoIndexer.invalidateCacheFor(meme.filePath)
+                        Toast.makeText(this@MainActivity, "✅ Replik güncellendi!", Toast.LENGTH_SHORT).show()
+                        filterList(searchInput.text.toString().trim(), immediate = true)
                     }
                 }
             }
@@ -745,25 +675,56 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dpToPx(14f) }
+        }
+
+        val fixBtn = Button(this).apply {
+            text = "✏️ Repliği Düzelt"
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            isAllCaps = false
+            setPadding(dpToPx(14f), 0, dpToPx(14f), 0)
+            background = GradientDrawable().apply {
+                cornerRadius = dpToPx(16f).toFloat()
+                setColor(Color.parseColor("#D97706"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                dpToPx(38f)
+            ).apply { rightMargin = dpToPx(10f) }
+            setOnClickListener {
+                currentPreviewMeme?.let { m ->
+                    hideInternalPlayer()
+                    showEditTagsDialog(m, prefillFromSearch = true)
+                }
+            }
+        }
+
         val closeBtn = Button(this).apply {
             text = "✕ Kapat"
             setTextColor(Color.WHITE)
-            textSize = 13f
+            textSize = 12f
             isAllCaps = false
             background = GradientDrawable().apply {
                 cornerRadius = dpToPx(16f).toFloat()
                 setColor(Color.parseColor("#334155"))
             }
-            layoutParams = LinearLayout.LayoutParams(dpToPx(120f), dpToPx(38f)).apply {
-                topMargin = dpToPx(14f)
-                gravity = Gravity.CENTER_HORIZONTAL
-            }
+            layoutParams = LinearLayout.LayoutParams(dpToPx(110f), dpToPx(38f))
             setOnClickListener { hideInternalPlayer() }
         }
 
+        btnRow.addView(fixBtn)
+        btnRow.addView(closeBtn)
+
         contentBox.addView(internalVideoView)
         contentBox.addView(internalImageView)
-        contentBox.addView(closeBtn)
+        contentBox.addView(btnRow)
         overlay.addView(contentBox)
 
         internalPlayerLayout = overlay
@@ -771,6 +732,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showInternalPlayer(meme: MemeVideo) {
+        currentPreviewMeme = meme
         val overlay = internalPlayerLayout ?: return
         val vView = internalVideoView ?: return
         val iView = internalImageView ?: return
@@ -816,10 +778,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkPermissionAndLoadAlbums() {
-        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            arrayOf(Manifest.permission.READ_MEDIA_VIDEO, Manifest.permission.READ_MEDIA_IMAGES)
+        val permissions = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(Manifest.permission.READ_MEDIA_VIDEO)
+            permissions.add(Manifest.permission.READ_MEDIA_IMAGES)
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         } else {
-            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+            permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
 
         val missing = permissions.filter {
@@ -835,9 +800,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 1001 && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
-            loadAlbumsIntoSpinner()
-        }
+        loadAlbumsIntoSpinner()
     }
 
     private fun loadAlbumsIntoSpinner() {
@@ -865,13 +828,13 @@ class MainActivity : AppCompatActivity() {
                     if (position in availableAlbums.indices) {
                         val chosen = availableAlbums[position]
                         selectedAlbumFilter = if (chosen.isAll) null else chosen.name
-                        filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false)
+                        filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false, immediate = true)
                     }
                 }
                 override fun onNothingSelected(parent: AdapterView<*>?) {}
             }
 
-            filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false)
+            filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false, immediate = true)
         }
     }
 

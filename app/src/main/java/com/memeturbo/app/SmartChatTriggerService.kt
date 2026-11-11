@@ -249,25 +249,22 @@ class SmartChatTriggerService : AccessibilityService() {
 
         val db = MemeDatabase.getInstance(this).memeDao()
 
-        fun refreshOverlayList(query: String) {
-            serviceScope.launch {
-                val all = db.getAllMemes()
-                val albumFiltered = if (selectedOverlayAlbum == null) {
-                    all
-                } else {
-                    all.filter { it.albumName == selectedOverlayAlbum }
-                }
-
-                val results = if (query.isEmpty()) {
-                    albumFiltered
-                } else {
-                    val words = normalizeText(query).split("\\s+".toRegex()).filter { it.isNotBlank() }
-                    albumFiltered.filter { item ->
-                        val cleanTitle = VideoIndexer.cleanFileNameForDisplay(item.fileName)
-                        val cleanScreen = VideoIndexer.filterWatermarks(item.screenText)
-                        val cleanVis = VideoIndexer.cleanVisualLabelsString(item.visualLabels)
-                        val fullText = normalizeText("${item.fileName} $cleanTitle ${item.spokenText} $cleanScreen $cleanVis")
-                        words.all { w -> fullText.contains(w) }
+        var searchJob: Job? = null
+        fun refreshOverlayList(query: String, immediate: Boolean = false) {
+            searchJob?.cancel()
+            searchJob = serviceScope.launch {
+                if (!immediate && query.isNotEmpty()) delay(200)
+                val results = withContext(Dispatchers.Default) {
+                    val all = db.getAllMemes()
+                    val albumFiltered = if (selectedOverlayAlbum == null) {
+                        all
+                    } else {
+                        all.filter { it.albumName == selectedOverlayAlbum }
+                    }
+                    if (query.isEmpty()) {
+                        albumFiltered
+                    } else {
+                        VideoIndexer.smartSearchFilter(albumFiltered, query)
                     }
                 }
                 adapter.submitList(results)
@@ -318,7 +315,7 @@ class SmartChatTriggerService : AccessibilityService() {
             }
         }
 
-        refreshOverlayList("")
+        refreshOverlayList("", immediate = true)
 
         searchInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
