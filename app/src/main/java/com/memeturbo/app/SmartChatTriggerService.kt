@@ -273,7 +273,11 @@ class SmartChatTriggerService : AccessibilityService() {
                         VideoIndexer.smartSearchFilter(albumFiltered, query)
                     }
                 }
-                adapter.submitList(results)
+                adapter.submitList(results) {
+                    if (query.isNotEmpty()) {
+                        recyclerView.scrollToPosition(0)
+                    }
+                }
                 if (query.isEmpty() && overlaySavedScrollPos > 0) {
                     isOverlayRestoringScroll = true
                     val targetPos = overlaySavedScrollPos
@@ -330,7 +334,7 @@ class SmartChatTriggerService : AccessibilityService() {
         searchInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                refreshOverlayList(s?.toString()?.trim() ?: "")
+                refreshOverlayList(s?.toString()?.trim() ?: "", immediate = true)
             }
             override fun afterTextChanged(s: Editable?) {}
         })

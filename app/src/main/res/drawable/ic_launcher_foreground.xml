@@ -3,13 +3,45 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- Koyu Lacivert Yuvarlatılmış Arka Plan -->
+    <path
+        android:fillColor="#0F172A"
+        android:pathData="M54,6 A48,48 0 1,0 54,102 A48,48 0 1,0 54,6 Z"/>
+    <!-- Parlak Turkuaz/İndigo Çerçeve -->
     <path
         android:fillColor="#0284C7"
-        android:pathData="M54,10 A44,44 0 1,0 54,98 A44,44 0 1,0 54,10 Z"/>
+        android:pathData="M54,11 A43,43 0 1,0 54,97 A43,43 0 1,0 54,11 Z"/>
     <path
-        android:fillColor="#38BDF8"
-        android:pathData="M54,18 A36,36 0 1,0 54,90 A36,36 0 1,0 54,18 Z"/>
+        android:fillColor="#0F172A"
+        android:pathData="M54,15 A39,39 0 1,0 54,93 A39,39 0 1,0 54,15 Z"/>
+    <!-- Konuşma Balonu & Video Çerçevesi -->
+    <path
+        android:fillColor="#1E293B"
+        android:strokeColor="#38BDF8"
+        android:strokeWidth="3"
+        android:pathData="M30,30 L78,30 A8,8 0 0,1 86,38 L86,62 A8,8 0 0,1 78,70 L48,70 L36,80 L38,70 L30,70 A8,8 0 0,1 22,62 L22,38 A8,8 0 0,1 30,30 Z"/>
+    <!-- Ses Dalgaları (Sol ve Sağ) -->
+    <path
+        android:strokeColor="#38BDF8"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:pathData="M30,44 L30,56 M36,39 L36,61 M72,39 L72,61 M78,44 L78,56"/>
+    <!-- Ortadaki Play (Video) Üçgeni -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M58,26 L36,54 L52,54 L48,82 L72,50 L56,50 Z"/>
+        android:pathData="M46,39 L46,61 L65,50 Z"/>
+    <!-- Sağ Alt Büyüteç ve Şimşek Rozeti -->
+    <path
+        android:fillColor="#6366F1"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.5"
+        android:pathData="M68,56 A12,12 0 1,0 68,80 A12,12 0 1,0 68,56 Z"/>
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:pathData="M77,77 L86,86"/>
+    <path
+        android:fillColor="#FACC15"
+        android:pathData="M70,59 L63,69 L68,69 L66,77 L74,66 L69,66 Z"/>
 </vector>

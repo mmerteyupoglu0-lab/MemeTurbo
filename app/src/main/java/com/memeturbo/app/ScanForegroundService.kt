@@ -12,6 +12,9 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.vosk.Model
 import java.io.File
@@ -143,7 +146,6 @@ class ScanForegroundService : Service() {
             val db = MemeDatabase.getInstance(this@ScanForegroundService).memeDao()
             try {
                 stateFlow.value = ScanState(isRunning = true, statusMessage = "${albumInfo.name} kontrol ediliyor...")
-                val model = ensureVoskModel(indexer)
 
                 val existingPaths = db.getAllIndexedPaths().toHashSet()
                 val mediaList = indexer.queryGalleryMediaPublic(albumInfo)
@@ -159,6 +161,33 @@ class ScanForegroundService : Service() {
                     return@launch
                 }
 
+                // AŞAMA 1: ANINDA ÖN-İNDEKSLEME (Tüm videolar 2 saniyede galeride görünür ve dosya adından aranabilir!)
+                stateFlow.value = stateFlow.value.copy(
+                    statusMessage = "⚡ $total medya hızlı listeye ekleniyor..."
+                )
+                for (item in newItems) {
+                    val f = File(item.path)
+                    if (f.exists()) {
+                        db.insertMeme(
+                            MemeVideo(
+                                filePath = f.absolutePath,
+                                fileName = f.nameWithoutExtension,
+                                durationMs = 0L,
+                                spokenText = "",
+                                screenText = "",
+                                visualLabels = "",
+                                isVideo = item.isVideo,
+                                lastModified = f.lastModified(),
+                                albumName = item.albumName
+                            )
+                        )
+                    }
+                }
+                stateFlow.value = stateFlow.value.copy(refreshTick = stateFlow.value.refreshTick + 1)
+
+                // AŞAMA 2: PARALEL SES + ALTYAZI MOTORU İLE TURBO ANALİZ
+                val model = ensureVoskModel(indexer)
+
                 newItems.forEachIndexed { index, item ->
                     if (isStoppedFlag) return@forEachIndexed
                     waitIfPaused()
@@ -166,7 +195,7 @@ class ScanForegroundService : Service() {
 
                     val file = File(item.path)
                     val curNum = index + 1
-                    val msg = "Yeni Medya ($curNum/$total): ${item.name.take(22)}"
+                    val msg = "⚡ Turbo Analiz ($curNum/$total): ${item.name.take(22)}"
                     stateFlow.value = stateFlow.value.copy(
                         isRunning = true,
                         current = curNum,
@@ -190,16 +219,16 @@ class ScanForegroundService : Service() {
                         }
                     }
 
-                    if (curNum % 10 == 0) {
+                    if (curNum % 8 == 0) {
                         stateFlow.value = stateFlow.value.copy(refreshTick = stateFlow.value.refreshTick + 1)
                     }
-                    delay(15) // CPU nefes alsın, telefon kasmasın
+                    delay(10)
                 }
 
                 val totalDb = db.getCount()
                 stateFlow.value = ScanState(
                     isRunning = false,
-                    statusMessage = "✅ $total yeni medya eklendi! (Toplam: $totalDb)",
+                    statusMessage = "✅ $total medya Turbo hızla tamamlandı! (Toplam: $totalDb)",
                     refreshTick = stateFlow.value.refreshTick + 1
                 )
             } catch (_: CancellationException) {

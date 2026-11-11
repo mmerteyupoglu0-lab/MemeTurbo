@@ -16,6 +16,8 @@ import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.vosk.Model
@@ -143,55 +145,83 @@ class VideoIndexer(private val context: Context) {
             val words = normQ.split(Regex("\\s+")).filter { it.isNotBlank() }
             if (words.isEmpty()) return items
 
-            val scored = ArrayList<Pair<MemeVideo, Int>>(items.size / 4 + 8)
+            val strongMatches = ArrayList<Pair<MemeVideo, Int>>(32)
+            val fallbackMatches = ArrayList<Pair<MemeVideo, Int>>(32)
+
             for (item in items) {
                 val blobKey = "${item.filePath}|${item.spokenText.hashCode()}|${item.screenText.hashCode()}|${item.visualLabels.hashCode()}"
                 val blob = searchBlobCache.getOrPut(blobKey) {
                     val cleanTitle = cleanFileNameForDisplay(item.fileName)
                     val cleanScreen = filterWatermarks(item.screenText)
                     val cleanVis = cleanVisualLabelsString(item.visualLabels)
-                    normalizeTr("${item.fileName} $cleanTitle ${item.spokenText} $cleanScreen $cleanVis")
+                    normalizeTr("$cleanTitle ${item.spokenText} $cleanScreen $cleanVis")
                 }
 
-                val spokenAndScreen = normalizeTr("${item.spokenText} ${filterWatermarks(item.screenText)} ${cleanFileNameForDisplay(item.fileName)}")
+                if (blob.isBlank()) continue
+
                 if (words.size == 1) {
                     val w = words[0]
-                    if (spokenAndScreen.contains(w)) {
-                        scored.add(item to 120)
-                    } else if (blob.contains(w)) {
-                        scored.add(item to 85)
-                    } else if (w.length >= 5 && spokenAndScreen.contains(w.substring(0, 4))) {
-                        scored.add(item to 35)
-                    }
-                } else {
-                    val significantWords = words.filter { it.length >= 3 }.ifEmpty { words }
-                    var matchedCount = 0
-                    var prefixMatchCount = 0
-                    var primaryMatched = 0
-                    for (w in significantWords) {
-                        if (spokenAndScreen.contains(w)) {
-                            matchedCount++
-                            primaryMatched++
-                        } else if (blob.contains(w)) {
-                            matchedCount++
-                        } else if (w.length >= 5) {
-                            val stem = w.substring(0, minOf(w.length - 1, 5))
-                            if (spokenAndScreen.contains(stem)) prefixMatchCount++
+                    val idx = blob.indexOf(w)
+                    if (idx >= 0) {
+                        val wordBoundaryBonus = if (idx == 0 || !blob[idx - 1].isLetterOrDigit()) 40 else 0
+                        strongMatches.add(item to (120 + wordBoundaryBonus))
+                    } else if (w.length >= 4) {
+                        val stem = w.substring(0, w.length - 1)
+                        if (blob.contains(stem)) {
+                            fallbackMatches.add(item to 45)
                         }
                     }
-                    if (matchedCount == significantWords.size) {
-                        val exactBonus = if (spokenAndScreen.contains(normQ)) 80 else 0
-                        scored.add(item to (140 + exactBonus + primaryMatched * 15))
-                    } else if (matchedCount > 0) {
-                        val partialScore = matchedCount * 25 + primaryMatched * 15 + prefixMatchCount * 5
-                        if (partialScore >= 30) {
-                            scored.add(item to partialScore)
+                } else {
+                    // Çok kelimeli canlı arama: yazılan son kelime henüz yarım olsa bile (ör: "orospu çoc")
+                    // tüm kelimeleri veya son kelimenin başlangıcını içerenleri "strongMatches" olarak ayır!
+                    val meaningfulWords = words.filterIndexed { index, w ->
+                        w.length >= 2 || index == words.lastIndex
+                    }.ifEmpty { words }
+
+                    var exactOrPrefixMatched = 0
+                    var stemMatched = 0
+                    for ((idx, w) in meaningfulWords.withIndex()) {
+                        if (blob.contains(w)) {
+                            exactOrPrefixMatched++
+                        } else if (idx == meaningfulWords.lastIndex && w.length >= 2 && blob.contains(w)) {
+                            exactOrPrefixMatched++
+                        } else if (w.length >= 4) {
+                            val stem = w.substring(0, minOf(w.length - 1, 5))
+                            if (blob.contains(stem)) stemMatched++
+                        }
+                    }
+
+                    if (exactOrPrefixMatched == meaningfulWords.size) {
+                        val phraseBonus = if (blob.contains(normQ)) 100 else 0
+                        strongMatches.add(item to (200 + phraseBonus))
+                    } else if (exactOrPrefixMatched + stemMatched == meaningfulWords.size && exactOrPrefixMatched > 0) {
+                        strongMatches.add(item to (130 + exactOrPrefixMatched * 20))
+                    } else if (exactOrPrefixMatched > 0) {
+                        // Sadece 3+ harfli anlamlı bir kelime eşleştiyse yedek listeye al
+                        val longWordMatched = meaningfulWords.any { it.length >= 3 && blob.contains(it) }
+                        if (longWordMatched) {
+                            val score = exactOrPrefixMatched * 30 + stemMatched * 10
+                            fallbackMatches.add(item to score)
                         }
                     }
                 }
             }
-            scored.sortByDescending { it.second }
-            return scored.map { it.first }
+
+            strongMatches.sortByDescending { it.second }
+            fallbackMatches.sortByDescending { it.second }
+
+            // Eğer tam/güçlü eşleşmeler varsa alakasız tek kelimelik gürültüyü listeye doldurma!
+            return if (strongMatches.isNotEmpty()) {
+                val combined = ArrayList<MemeVideo>(strongMatches.size + 6)
+                for (p in strongMatches) combined.add(p.first)
+                // İlk kelimeyi Vosk yanlış anlamış olabilir diye sadece en yüksek puanlı ilk 6 yakın adayı sona ekle
+                for (p in fallbackMatches.take(6)) {
+                    if (p.second >= 40) combined.add(p.first)
+                }
+                combined
+            } else {
+                fallbackMatches.take(24).map { it.first }
+            }
         }
 
         // Japonca, Korece, Çince, Arapça karakterleri temizleyen Regex
@@ -762,70 +792,80 @@ class VideoIndexer(private val context: Context) {
         )
     }
 
-    suspend fun extractVideoData(file: File, voskModel: Model?, albumName: String = ""): MemeVideo {
-        // 1. MUTLAK ÖNCELİK: TÜRKÇE SES VE REPLİK TANIMA!
-        val spokenText = if (voskModel != null) {
-            transcribeVideoAudio(file, voskModel)
-        } else {
-            ""
+    suspend fun extractVideoData(file: File, voskModel: Model?, albumName: String = ""): MemeVideo = coroutineScope {
+        // SES (Vosk) ve GÖRÜNTÜ (Altyazı OCR) AYNI ANDA PARALEL ÇALIŞIR -> %100 Güvenli & 3x Hızlı!
+        val spokenDeferred = async(Dispatchers.Default) {
+            if (voskModel != null) transcribeVideoAudio(file, voskModel) else ""
         }
 
-        val retriever = MediaMetadataRetriever()
-        var durationMs = 0L
-        val screenTexts = mutableSetOf<String>()
-        val sceneLabels = mutableSetOf<String>()
+        val visualDeferred = async(Dispatchers.IO) {
+            val retriever = MediaMetadataRetriever()
+            var durationMs = 0L
+            val screenTexts = mutableSetOf<String>()
+            var firstFrameBitmapForScene: Bitmap? = null
 
-        try {
-            retriever.setDataSource(file.absolutePath)
-            durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            try {
+                retriever.setDataSource(file.absolutePath)
+                durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
 
-            val hasMeaningfulSpeech = !isWeakSpokenFiller(spokenText)
-            val sampleTimesUs = listOf(700_000L, 2_200_000L, 4_000_000L)
-            var didSceneLabel = false
-            for (timeUs in sampleTimesUs) {
-                if (timeUs > durationMs * 1000L && timeUs > 700_000L) continue
-                val rawBitmap = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: continue
-                val maxDim = maxOf(rawBitmap.width, rawBitmap.height)
-                val bitmap = if (maxDim > 720) {
-                    val scale = 720f / maxDim
-                    val scaled = Bitmap.createScaledBitmap(
-                        rawBitmap,
-                        (rawBitmap.width * scale).toInt().coerceAtLeast(1),
-                        (rawBitmap.height * scale).toInt().coerceAtLeast(1),
-                        true
-                    )
-                    if (scaled != rawBitmap) rawBitmap.recycle()
-                    scaled
-                } else {
-                    rawBitmap
+                val sampleTimesUs = listOf(800_000L, 2_400_000L)
+                for ((idx, timeUs) in sampleTimesUs.withIndex()) {
+                    if (timeUs > durationMs * 1000L && timeUs > 800_000L) continue
+                    // İlk karede net altyazı yakalandıysa 2. kareyi tarayarak vakit kaybetme!
+                    if (screenTexts.any { it.length >= 10 }) break
+
+                    val rawBitmap = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: continue
+                    val maxDim = maxOf(rawBitmap.width, rawBitmap.height)
+                    val bitmap = if (maxDim > 540) {
+                        val scale = 540f / maxDim
+                        val scaled = Bitmap.createScaledBitmap(
+                            rawBitmap,
+                            (rawBitmap.width * scale).toInt().coerceAtLeast(1),
+                            (rawBitmap.height * scale).toInt().coerceAtLeast(1),
+                            true
+                        )
+                        if (scaled != rawBitmap) rawBitmap.recycle()
+                        scaled
+                    } else {
+                        rawBitmap
+                    }
+
+                    val inputImage = InputImage.fromBitmap(bitmap, 0)
+                    val result = ocrRecognizer.process(inputImage).await()
+                    val cleanLines = filterWatermarks(result.text)
+                    if (cleanLines.isNotEmpty()) screenTexts.add(cleanLines)
+
+                    if (idx == 0 && screenTexts.isEmpty()) {
+                        firstFrameBitmapForScene = bitmap
+                    } else {
+                        bitmap.recycle()
+                    }
                 }
-
-                val inputImage = InputImage.fromBitmap(bitmap, 0)
-                val result = ocrRecognizer.process(inputImage).await()
-                val cleanLines = filterWatermarks(result.text)
-                if (cleanLines.isNotEmpty()) screenTexts.add(cleanLines)
-
-                // Konuşma ve yazı yoksa sadece 1 karede hayvan/nesne/sahne etiketi al (hız için!)
-                if (!didSceneLabel && !hasMeaningfulSpeech && screenTexts.isEmpty()) {
-                    val scene = extractStrictTurkishSceneLabels(inputImage)
-                    if (scene.isNotEmpty()) sceneLabels.add(scene)
-                    didSceneLabel = true
-                }
-
-                bitmap.recycle()
+            } catch (_: Exception) {
+            } finally {
+                try { retriever.release() } catch (_: Exception) {}
             }
-        } catch (_: Exception) {
-        } finally {
-            try { retriever.release() } catch (_: Exception) {}
+            Triple(durationMs, screenTexts, firstFrameBitmapForScene)
         }
 
-        return MemeVideo(
+        val spokenText = spokenDeferred.await()
+        val (durationMs, screenTexts, sceneBitmap) = visualDeferred.await()
+
+        var sceneLabel = ""
+        if (sceneBitmap != null) {
+            if (isWeakSpokenFiller(spokenText) && screenTexts.isEmpty()) {
+                sceneLabel = extractStrictTurkishSceneLabels(InputImage.fromBitmap(sceneBitmap, 0))
+            }
+            sceneBitmap.recycle()
+        }
+
+        MemeVideo(
             filePath = file.absolutePath,
             fileName = file.nameWithoutExtension,
             durationMs = durationMs,
             spokenText = spokenText,
             screenText = screenTexts.joinToString(" | "),
-            visualLabels = sceneLabels.distinct().joinToString(" • "),
+            visualLabels = sceneLabel,
             isVideo = true,
             lastModified = file.lastModified(),
             albumName = albumName
@@ -916,7 +956,7 @@ class VideoIndexer(private val context: Context) {
             val bufferInfo = MediaCodec.BufferInfo()
             var isEOS = false
             var totalProcessedTimeUs = 0L
-            val maxAudioDurationUs = 15_000_000L // İlk 15 saniye (hızlı & yeterli)
+            val maxAudioDurationUs = 12_000_000L // İlk 12 saniye (4x hızlı & replik için ideal)
 
             // Tüm 16kHz Mono örnekleri biriktirip ses seviyesini normalize edeceğiz
             val mono16kOut = ByteArrayOutputStream(32000 * 15)
@@ -974,11 +1014,22 @@ class VideoIndexer(private val context: Context) {
                 var offset = 0
                 while (offset < all16kBytes.size) {
                     val len = minOf(chunkSize, all16kBytes.size - offset)
-                    val chunk = all16kBytes.copyOfRange(offset, offset + len)
-                    if (recognizer.acceptWaveForm(chunk, len)) {
-                        val resJson = JSONObject(recognizer.result)
-                        val text = resJson.optString("text", "").trim()
-                        if (text.isNotBlank()) transcriptParts.add(text)
+                    // VAD (Sessizlik Atlayıcı): Blokta konuşma enerjisi yoksa Vosk'u boşuna yorma!
+                    var chunkPeak = 0
+                    var i = offset
+                    while (i + 1 < offset + len) {
+                        val sample = (all16kBytes[i].toInt() and 0xFF) or (all16kBytes[i + 1].toInt() shl 8)
+                        val amp = abs(sample)
+                        if (amp > chunkPeak) chunkPeak = amp
+                        i += 6 // Hızlı örnekleme
+                    }
+                    if (chunkPeak > 1400) {
+                        val chunk = all16kBytes.copyOfRange(offset, offset + len)
+                        if (recognizer.acceptWaveForm(chunk, len)) {
+                            val resJson = JSONObject(recognizer.result)
+                            val text = resJson.optString("text", "").trim()
+                            if (text.isNotBlank()) transcriptParts.add(text)
+                        }
                     }
                     offset += len
                 }

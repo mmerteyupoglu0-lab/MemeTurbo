@@ -93,7 +93,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val title = TextView(this).apply {
-            text = "⚡ MemeTurbo Akıllı Galeri"
+            text = "⚡ ReplikBul • MemeTurbo"
             textSize = 20f
             setTextColor(Color.WHITE)
         }
@@ -403,7 +403,7 @@ class MainActivity : AppCompatActivity() {
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                 val q = s?.toString()?.trim() ?: ""
                 clearSearchBtn.visibility = if (q.isNotEmpty()) View.VISIBLE else View.GONE
-                filterList(q, restoreScrollWhenEmpty = q.isEmpty(), immediate = false)
+                filterList(q, restoreScrollWhenEmpty = q.isEmpty(), immediate = true)
             }
             override fun afterTextChanged(s: Editable?) {}
         })
@@ -551,7 +551,12 @@ class MainActivity : AppCompatActivity() {
                 Pair(finalItems, albumFiltered.size)
             }
 
-            adapter.submitList(resultPair.first)
+            adapter.submitList(resultPair.first) {
+                if (query.isNotEmpty()) {
+                    // Yazarken arama tuşuna basmadan en alakalı örnek videoları anında en üstte göster!
+                    galleryRecycler.scrollToPosition(0)
+                }
+            }
 
             if (!ScanForegroundService.stateFlow.value.isRunning && selectedAlbumFilter != null && query.isEmpty()) {
                 statusText.text = if (resultPair.second == 0) {
