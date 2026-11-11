@@ -209,7 +209,7 @@ class ScanForegroundService : Service() {
         }
     }
 
-    private fun runVoiceRepair() {
+    private fun runVoiceRepair(albumInfo: VideoIndexer.AlbumInfo) {
         currentJob?.cancel()
         isPausedFlag = false
         isStoppedFlag = false
@@ -218,7 +218,7 @@ class ScanForegroundService : Service() {
             val indexer = VideoIndexer(this@ScanForegroundService)
             val db = MemeDatabase.getInstance(this@ScanForegroundService).memeDao()
             try {
-                stateFlow.value = ScanState(isRunning = true, statusMessage = "🧹 Eski çöpler temizleniyor...")
+                stateFlow.value = ScanState(isRunning = true, statusMessage = "🧹 Zayıf ve altyazısız videolar bulunuyor...")
                 indexer.cleanExistingDatabaseRecords()
 
                 val model = ensureVoskModel(indexer)
@@ -231,19 +231,35 @@ class ScanForegroundService : Service() {
                     return@launch
                 }
 
-                val missingVideos = db.getVideosMissingVoice()
-                val total = missingVideos.size
+                val prefs = getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+                val editedPaths = prefs.getStringSet("user_edited_paths", emptySet()) ?: emptySet()
+
+                val allVideos = db.getVideoMemes().let { list ->
+                    if (albumInfo.isAll) list else list.filter { it.albumName == albumInfo.name }
+                }
+
+                // Elle düzenlediklerine dokunmadan sadece zayıf sesli veya altyazısı eksik videoları seç
+                val weakVideos = allVideos.filter { item ->
+                    if (item.filePath in editedPaths) return@filter false
+                    val spoken = item.spokenText.replace("\u200B", "").trim()
+                    val screen = VideoIndexer.filterWatermarks(item.screenText)
+                    val isWeakVoice = VideoIndexer.isWeakSpokenFiller(spoken)
+                    val wordCount = spoken.split(Regex("\\s+")).count { it.isNotBlank() }
+                    isWeakVoice || (screen.isBlank() && wordCount < 3)
+                }
+
+                val total = weakVideos.size
 
                 if (total == 0) {
                     stateFlow.value = ScanState(
                         isRunning = false,
-                        statusMessage = "✅ Tüm videoların ses taraması zaten tamamlanmış!",
+                        statusMessage = "✅ Zayıf veya eksik video kalmadı!",
                         refreshTick = stateFlow.value.refreshTick + 1
                     )
                     return@launch
                 }
 
-                missingVideos.forEachIndexed { idx, item ->
+                weakVideos.forEachIndexed { idx, item ->
                     if (isStoppedFlag) return@forEachIndexed
                     waitIfPaused()
                     if (isStoppedFlag) return@forEachIndexed
@@ -251,7 +267,7 @@ class ScanForegroundService : Service() {
                     val file = File(item.filePath)
                     val curNum = idx + 1
                     val shortName = VideoIndexer.cleanFileNameForDisplay(item.fileName).ifEmpty { item.fileName.take(20) }
-                    val msg = "🎙️ Replik ($curNum/$total): $shortName"
+                    val msg = "🔧 Onarım ($curNum/$total): $shortName"
 
                     stateFlow.value = stateFlow.value.copy(
                         isRunning = true,
@@ -265,21 +281,24 @@ class ScanForegroundService : Service() {
 
                     if (file.exists()) {
                         try {
-                            val text = indexer.transcribeSingleVideo(file, model)
-                            val cleanTitle = VideoIndexer.cleanFileNameForDisplay(item.fileName)
-                            val cleanScreen = VideoIndexer.filterWatermarks(item.screenText)
-                            var cleanVis = VideoIndexer.cleanVisualLabelsString(item.visualLabels)
-
-                            if (text.isBlank() && cleanTitle.isBlank() && cleanScreen.isBlank() && cleanVis.isBlank()) {
-                                cleanVis = indexer.detectSceneForVideoFile(file)
+                            val fresh = indexer.extractVideoData(file, model, item.albumName)
+                            val oldSpoken = item.spokenText.replace("\u200B", "").trim()
+                            val newSpoken = fresh.spokenText.replace("\u200B", "").trim()
+                            val finalSpoken = when {
+                                !VideoIndexer.isWeakSpokenFiller(newSpoken) -> newSpoken
+                                oldSpoken.isNotBlank() -> oldSpoken
+                                newSpoken.isNotBlank() -> newSpoken
+                                else -> "\u200B"
                             }
+                            val oldScreen = VideoIndexer.filterWatermarks(item.screenText)
+                            val finalScreen = fresh.screenText.ifBlank { oldScreen }
+                            val finalVisual = fresh.visualLabels.ifBlank { VideoIndexer.cleanVisualLabelsString(item.visualLabels) }
 
-                            val savedSpoken = if (text.isNotBlank()) text else "\u200B"
                             db.updateFields(
                                 path = item.filePath,
-                                spokenText = savedSpoken,
-                                screenText = cleanScreen,
-                                visualLabels = cleanVis
+                                spokenText = finalSpoken,
+                                screenText = finalScreen,
+                                visualLabels = finalVisual
                             )
                         } catch (e: Exception) {
                             e.printStackTrace()
@@ -294,7 +313,7 @@ class ScanForegroundService : Service() {
 
                 stateFlow.value = ScanState(
                     isRunning = false,
-                    statusMessage = "✅ Tüm replikler ve açıklamalar güncellendi!",
+                    statusMessage = "✅ $total zayıf/eksik video yenilendi!",
                     refreshTick = stateFlow.value.refreshTick + 1
                 )
             } catch (_: CancellationException) {

@@ -97,7 +97,7 @@ class VideoIndexer(private val context: Context) {
             "mu", "mü", "mi", "mı", "ve", "de", "da", "ki", "bi", "bir", "ama", "çok", "yok", "var"
         )
 
-        private fun isWeakSpokenFiller(spoken: String): Boolean {
+        fun isWeakSpokenFiller(spoken: String): Boolean {
             if (spoken.isBlank()) return true
             val words = spoken.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
             if (words.isEmpty()) return true

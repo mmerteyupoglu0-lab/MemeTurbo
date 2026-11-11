@@ -513,6 +513,11 @@ class MainActivity : AppCompatActivity() {
     private fun startRepairService() {
         val intent = Intent(this, ScanForegroundService::class.java).apply {
             action = ScanForegroundService.ACTION_START_REPAIR
+            if (availableAlbums.isNotEmpty() && albumSpinner.selectedItemPosition in availableAlbums.indices) {
+                val selectedAlbum = availableAlbums[albumSpinner.selectedItemPosition]
+                putExtra(ScanForegroundService.EXTRA_ALBUM_NAME, selectedAlbum.name)
+                putExtra(ScanForegroundService.EXTRA_ALBUM_IS_ALL, selectedAlbum.isAll)
+            }
         }
         ContextCompat.startForegroundService(this, intent)
     }
@@ -653,6 +658,10 @@ class MainActivity : AppCompatActivity() {
                     lifecycleScope.launch {
                         val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
                         db.updateSpokenText(meme.filePath, corrected)
+                        val prefs = getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+                        val editedSet = prefs.getStringSet("user_edited_paths", emptySet())?.toMutableSet() ?: mutableSetOf()
+                        editedSet.add(meme.filePath)
+                        prefs.edit().putStringSet("user_edited_paths", editedSet).apply()
                         cachedAllMemes = null
                         VideoIndexer.invalidateCacheFor(meme.filePath)
                         Toast.makeText(this@MainActivity, "✅ Replik güncellendi!", Toast.LENGTH_SHORT).show()
