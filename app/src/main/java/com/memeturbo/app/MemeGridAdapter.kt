@@ -17,7 +17,6 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.*
-import java.io.File
 
 class MemeGridAdapter(
     private val onPreviewClick: (MemeVideo) -> Unit,
@@ -28,7 +27,7 @@ class MemeGridAdapter(
     private val items = mutableListOf<MemeVideo>()
     private val adapterScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
-    // 120 FPS Yağ gibi kaydırma için Bellek Önbelleği (LruCache)
+    // 120 FPS akıcı kaydırma için Bellek Önbelleği (LruCache)
     companion object {
         private val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt()
         private val cacheSize = maxMemory / 8
@@ -171,16 +170,23 @@ class MemeGridAdapter(
             }
         }
 
-        // KESİN ÖNCELİK SIRALAMASI:
-        // 1. SES / REPLİK: Kullanıcının aradığı ve duyduğu ilk şey!
-        // 2. EKRAN YAZISI (OCR): Alt yazı veya ekrandaki meme yazısı
-        // 3. ÖZEL ETİKETLER: Kullanıcının ✏️ ile eklediği isimler (Örn: Arda Turan)
-        // 4. Dosya Adı
+        val cleanSpoken = meme.spokenText.replace("\u200B", "").trim()
+        val cleanTitle = VideoIndexer.cleanFileNameForDisplay(meme.fileName)
+        val cleanScreen = VideoIndexer.filterWatermarks(meme.screenText)
+        val cleanVisual = VideoIndexer.cleanVisualLabelsString(meme.visualLabels)
+
+        // KART BAŞLIĞI ÖNCELİK SIRALAMASI:
+        // 1. Ses / Replik (🗣️) -> Videodaki konuşma her zaman 1. öncelik!
+        // 2. Temiz Dosya Başlığı (🎬) -> "Ben mi demissim onu", "Golem edit", "savaş cebeci bekliyoruz" vb.
+        // 3. Temiz Ekran Yazısı (📝) -> "Hz Adem Allaha hesap verirken", "Keşke anlatmasaydım" vb.
+        // 4. Saf Türkçe Sahne/Hayvan veya Özel Etiket (🐱 Kedi • 💡 Işık / Lazer, 🐵 Maymun, 🏷️ Arda Turan)
         val snippet = when {
-            meme.spokenText.isNotBlank() -> "🗣️ ${meme.spokenText}"
-            meme.screenText.isNotBlank() -> "📝 ${meme.screenText}"
-            meme.visualLabels.isNotBlank() -> "🏷️ ${meme.visualLabels}"
-            else -> meme.fileName
+            cleanSpoken.isNotBlank() -> "🗣️ $cleanSpoken"
+            meme.isVideo && cleanTitle.isNotBlank() -> "🎬 $cleanTitle"
+            cleanScreen.isNotBlank() -> "📝 $cleanScreen"
+            cleanTitle.isNotBlank() -> "🖼️ $cleanTitle"
+            cleanVisual.isNotBlank() -> if (cleanVisual.any { !it.isLetterOrDigit() && !it.isWhitespace() }) cleanVisual else "🏷️ $cleanVisual"
+            else -> if (meme.isVideo) "🎬 Video #${position + 1}" else "🖼️ Görsel #${position + 1}"
         }
         holder.transcriptView.text = snippet
 

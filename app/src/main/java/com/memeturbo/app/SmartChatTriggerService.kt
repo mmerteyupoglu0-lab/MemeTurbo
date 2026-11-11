@@ -33,6 +33,8 @@ class SmartChatTriggerService : AccessibilityService() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     private var lastClickTime = 0L
+    private var overlaySavedScrollPos = 0
+    private var overlaySavedScrollOffset = 0
 
     private val allowedChatPackages = setOf(
         "com.instagram.android",
@@ -78,9 +80,25 @@ class SmartChatTriggerService : AccessibilityService() {
     private fun showGameTurboSearchPanel() {
         if (searchPanelView != null) return
 
+        var previewBoxRef: FrameLayout? = null
+        var videoViewRef: VideoView? = null
+        var searchInputRef: EditText? = null
+
         val container = object : LinearLayout(this) {
             override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
                 if (event?.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
+                    // 1. Önizleme açıksa önce önizlemeyi kapat
+                    if (previewBoxRef?.visibility == View.VISIBLE) {
+                        videoViewRef?.stopPlayback()
+                        previewBoxRef?.visibility = View.GONE
+                        return true
+                    }
+                    // 2. Arama kutusunda yazı varsa yazıyı temizle ve son konuma dön
+                    if (!searchInputRef?.text.isNullOrEmpty()) {
+                        searchInputRef?.setText("")
+                        return true
+                    }
+                    // 3. Arama zaten boşsa paneli kapat
                     closeSearchPanel()
                     return true
                 }
@@ -115,6 +133,7 @@ class SmartChatTriggerService : AccessibilityService() {
             setPadding(dpToPx(14f), dpToPx(10f), dpToPx(14f), dpToPx(10f))
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
+        searchInputRef = searchInput
 
         val closeBtn = TextView(this).apply {
             text = "✕"
@@ -132,6 +151,8 @@ class SmartChatTriggerService : AccessibilityService() {
             visibility = View.GONE
             setPadding(0, dpToPx(6f), 0, dpToPx(6f))
         }
+        previewBoxRef = previewBox
+
         val videoView = VideoView(this).apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -139,15 +160,31 @@ class SmartChatTriggerService : AccessibilityService() {
                 Gravity.CENTER
             )
         }
+        videoViewRef = videoView
         previewBox.addView(videoView)
         container.addView(previewBox)
 
+        val gridLayoutManager = GridLayoutManager(this@SmartChatTriggerService, 2)
         val recyclerView = RecyclerView(this).apply {
-            layoutManager = GridLayoutManager(this@SmartChatTriggerService, 2)
+            layoutManager = gridLayoutManager
+            setHasFixedSize(true)
+            setItemViewCacheSize(24)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 dpToPx(320f)
             ).apply { topMargin = dpToPx(8f) }
+            addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                    super.onScrolled(recyclerView, dx, dy)
+                    if (searchInput.text.isNullOrEmpty()) {
+                        val pos = gridLayoutManager.findFirstVisibleItemPosition()
+                        if (pos != RecyclerView.NO_POSITION) {
+                            overlaySavedScrollPos = pos
+                            overlaySavedScrollOffset = gridLayoutManager.findViewByPosition(pos)?.top ?: 0
+                        }
+                    }
+                }
+            })
         }
 
         val adapter = MemeGridAdapter(
@@ -165,7 +202,7 @@ class SmartChatTriggerService : AccessibilityService() {
 
         val db = MemeDatabase.getInstance(this).memeDao()
         serviceScope.launch {
-            adapter.submitList(db.getRecentMemes())
+            adapter.submitList(db.getAllMemes())
         }
 
         searchInput.addTextChangedListener(object : TextWatcher {
@@ -175,15 +212,23 @@ class SmartChatTriggerService : AccessibilityService() {
                 serviceScope.launch {
                     val all = db.getAllMemes()
                     val results = if (q.isEmpty()) {
-                        all.take(60)
+                        all
                     } else {
                         val words = normalizeText(q).split("\\s+".toRegex()).filter { it.isNotBlank() }
                         all.filter { item ->
-                            val fullText = normalizeText("${item.fileName} ${item.spokenText} ${item.screenText} ${item.visualLabels}")
+                            val cleanTitle = VideoIndexer.cleanFileNameForDisplay(item.fileName)
+                            val cleanScreen = VideoIndexer.filterWatermarks(item.screenText)
+                            val cleanVis = VideoIndexer.cleanVisualLabelsString(item.visualLabels)
+                            val fullText = normalizeText("${item.fileName} $cleanTitle ${item.spokenText} $cleanScreen $cleanVis")
                             words.all { w -> fullText.contains(w) }
                         }
                     }
                     adapter.submitList(results)
+                    if (q.isEmpty() && overlaySavedScrollPos > 0) {
+                        recyclerView.post {
+                            gridLayoutManager.scrollToPositionWithOffset(overlaySavedScrollPos, overlaySavedScrollOffset)
+                        }
+                    }
                 }
             }
             override fun afterTextChanged(s: Editable?) {}
@@ -261,7 +306,6 @@ class SmartChatTriggerService : AccessibilityService() {
                 }
             }
         } else {
-            // Instagram ve diğerlerinde standart paylaşım penceresi
             launchShareIntent(mime, uri)
         }
     }

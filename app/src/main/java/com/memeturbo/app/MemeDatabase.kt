@@ -45,17 +45,18 @@ interface MemeDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMeme(meme: MemeVideo)
 
-    @Query("UPDATE meme_videos SET visualLabels = visualLabels || ' ' || :newTags WHERE filePath = :path")
+    @Update
+    suspend fun updateMeme(meme: MemeVideo)
+
+    @Query("UPDATE meme_videos SET visualLabels = CASE WHEN visualLabels = '' THEN :newTags ELSE visualLabels || ' • ' || :newTags END WHERE filePath = :path")
     suspend fun appendCustomTags(path: String, newTags: String)
 
     @Query("UPDATE meme_videos SET spokenText = :spokenText WHERE filePath = :path")
     suspend fun updateSpokenText(path: String, spokenText: String)
 
-    // Eski taramalardan kalan tüm "skin, mouth, hair, muscle" İngilizce çöplerini tek saniyede siler
-    @Query("UPDATE meme_videos SET visualLabels = '' WHERE visualLabels LIKE '%skin%' OR visualLabels LIKE '%mouth%' OR visualLabels LIKE '%hair%' OR visualLabels LIKE '%muscle%'")
-    suspend fun clearJunkVisualLabels()
+    @Query("UPDATE meme_videos SET spokenText = :spokenText, screenText = :screenText, visualLabels = :visualLabels WHERE filePath = :path")
+    suspend fun updateFields(path: String, spokenText: String, screenText: String, visualLabels: String)
 
-    // Sadece henüz repliği (sesi) taranmamış videoları getirir (Hızlı onarım için)
     @Query("SELECT * FROM meme_videos WHERE isVideo = 1 AND (spokenText IS NULL OR spokenText = '')")
     suspend fun getVideosMissingVoice(): List<MemeVideo>
 
