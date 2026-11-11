@@ -35,6 +35,7 @@ class SmartChatTriggerService : AccessibilityService() {
     private var lastClickTime = 0L
     private var overlaySavedScrollPos = 0
     private var overlaySavedScrollOffset = 0
+    private var isOverlayRestoringScroll = false
     private var selectedOverlayAlbum: String? = null
 
     private val allowedChatPackages = setOf(
@@ -223,7 +224,7 @@ class SmartChatTriggerService : AccessibilityService() {
             addOnScrollListener(object : RecyclerView.OnScrollListener() {
                 override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
                     super.onScrolled(recyclerView, dx, dy)
-                    if (searchInput.text.isNullOrEmpty()) {
+                    if (searchInput.text.isNullOrEmpty() && !isOverlayRestoringScroll && (dx != 0 || dy != 0)) {
                         val pos = gridLayoutManager.findFirstVisibleItemPosition()
                         if (pos != RecyclerView.NO_POSITION) {
                             overlaySavedScrollPos = pos
@@ -269,8 +270,12 @@ class SmartChatTriggerService : AccessibilityService() {
                 }
                 adapter.submitList(results)
                 if (query.isEmpty() && overlaySavedScrollPos > 0) {
+                    isOverlayRestoringScroll = true
+                    val targetPos = overlaySavedScrollPos
+                    val targetOffset = overlaySavedScrollOffset
                     recyclerView.post {
-                        gridLayoutManager.scrollToPositionWithOffset(overlaySavedScrollPos, overlaySavedScrollOffset)
+                        gridLayoutManager.scrollToPositionWithOffset(targetPos, targetOffset)
+                        recyclerView.post { isOverlayRestoringScroll = false }
                     }
                 }
             }
@@ -371,22 +376,20 @@ class SmartChatTriggerService : AccessibilityService() {
         val uri = FileProvider.getUriForFile(this, "${applicationContext.packageName}.fileprovider", file)
         val mime = if (meme.isVideo) "video/*" else "image/*"
 
-        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val clip = ClipData.newUri(contentResolver, meme.fileName, uri)
-        clipboard.setPrimaryClip(clip)
-
         closeSearchPanel()
 
         val isWhatsApp = currentChatPackage?.contains("whatsapp", ignoreCase = true) == true
         if (isWhatsApp) {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = ClipData.newUri(contentResolver, meme.fileName, uri)
+            clipboard.setPrimaryClip(clip)
+
             serviceScope.launch {
                 delay(200)
                 val focusedInput = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
                 val pasted = focusedInput?.performAction(AccessibilityNodeInfo.ACTION_PASTE) == true
                 if (!pasted) {
                     launchShareIntent(mime, uri)
-                } else {
-                    Toast.makeText(this@SmartChatTriggerService, "Sohbete yapıştırıldı! 🚀", Toast.LENGTH_SHORT).show()
                 }
             }
         } else {

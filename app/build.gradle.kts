@@ -15,8 +15,8 @@ android {
         applicationId = "com.memeturbo.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 15
-        versionName = "2.3.1"
+        versionCode = 17
+        versionName = "2.4.0"
     }
 
     signingConfigs {

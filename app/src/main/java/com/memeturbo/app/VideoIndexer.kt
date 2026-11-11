@@ -92,6 +92,22 @@ class VideoIndexer(private val context: Context) {
             return text
         }
 
+        private val weakVoskFillerWords = setOf(
+            "bilmiyorum", "bilmiyor", "bu", "ne", "ya", "ben", "on", "kim", "b", "d", "o", "e", "i",
+            "mu", "mü", "mi", "mı", "ve", "de", "da", "ki", "bi", "bir", "ama", "çok", "yok", "var"
+        )
+
+        private fun isWeakSpokenFiller(spoken: String): Boolean {
+            if (spoken.isBlank()) return true
+            val words = spoken.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+            if (words.isEmpty()) return true
+            if (words.size == 1) {
+                val w = words[0].lowercase()
+                if (w.length <= 2 || w in weakVoskFillerWords) return true
+            }
+            return false
+        }
+
         fun getCachedDisplaySnippet(meme: MemeVideo): String {
             val cacheKey = "${meme.filePath}|${meme.spokenText.hashCode()}|${meme.screenText.hashCode()}|${meme.visualLabels.hashCode()}"
             snippetCache[cacheKey]?.let { return it }
@@ -100,11 +116,13 @@ class VideoIndexer(private val context: Context) {
             val cleanTitle = cleanFileNameForDisplay(meme.fileName)
             val cleanScreen = filterWatermarks(meme.screenText)
             val cleanVisual = cleanVisualLabelsString(meme.visualLabels)
+            val weakSpoken = isWeakSpokenFiller(cleanSpoken)
 
             val snippet = when {
+                cleanSpoken.isNotBlank() && !weakSpoken -> "🗣️ $cleanSpoken"
+                cleanScreen.isNotBlank() -> "📝 $cleanScreen"
                 cleanSpoken.isNotBlank() -> "🗣️ $cleanSpoken"
                 meme.isVideo && cleanTitle.isNotBlank() -> "🎬 $cleanTitle"
-                cleanScreen.isNotBlank() -> "📝 $cleanScreen"
                 cleanTitle.isNotBlank() -> "🖼️ $cleanTitle"
                 cleanVisual.isNotBlank() -> if (cleanVisual.any { !it.isLetterOrDigit() && !it.isWhitespace() }) cleanVisual else "🏷️ $cleanVisual"
                 else -> if (meme.isVideo) "🎬 Video" else "🖼️ Görsel"
@@ -135,30 +153,38 @@ class VideoIndexer(private val context: Context) {
                     normalizeTr("${item.fileName} $cleanTitle ${item.spokenText} $cleanScreen $cleanVis")
                 }
 
+                val spokenAndScreen = normalizeTr("${item.spokenText} ${filterWatermarks(item.screenText)} ${cleanFileNameForDisplay(item.fileName)}")
                 if (words.size == 1) {
                     val w = words[0]
-                    if (blob.contains(w)) {
-                        scored.add(item to 100)
-                    } else if (w.length >= 4 && blob.contains(w.substring(0, w.length - 1))) {
-                        scored.add(item to 40)
+                    if (spokenAndScreen.contains(w)) {
+                        scored.add(item to 120)
+                    } else if (blob.contains(w)) {
+                        scored.add(item to 85)
+                    } else if (w.length >= 5 && spokenAndScreen.contains(w.substring(0, 4))) {
+                        scored.add(item to 35)
                     }
                 } else {
+                    val significantWords = words.filter { it.length >= 3 }.ifEmpty { words }
                     var matchedCount = 0
                     var prefixMatchCount = 0
-                    for (w in words) {
-                        if (blob.contains(w)) {
+                    var primaryMatched = 0
+                    for (w in significantWords) {
+                        if (spokenAndScreen.contains(w)) {
                             matchedCount++
-                        } else if (w.length >= 4) {
+                            primaryMatched++
+                        } else if (blob.contains(w)) {
+                            matchedCount++
+                        } else if (w.length >= 5) {
                             val stem = w.substring(0, minOf(w.length - 1, 5))
-                            if (blob.contains(stem)) prefixMatchCount++
+                            if (spokenAndScreen.contains(stem)) prefixMatchCount++
                         }
                     }
-                    if (matchedCount == words.size) {
-                        val exactBonus = if (blob.contains(normQ)) 50 else 0
-                        scored.add(item to (100 + exactBonus))
-                    } else if (matchedCount > 0 || prefixMatchCount > 0) {
-                        val partialScore = matchedCount * 20 + prefixMatchCount * 8
-                        if (partialScore >= 20) {
+                    if (matchedCount == significantWords.size) {
+                        val exactBonus = if (spokenAndScreen.contains(normQ)) 80 else 0
+                        scored.add(item to (140 + exactBonus + primaryMatched * 15))
+                    } else if (matchedCount > 0) {
+                        val partialScore = matchedCount * 25 + primaryMatched * 15 + prefixMatchCount * 5
+                        if (partialScore >= 30) {
                             scored.add(item to partialScore)
                         }
                     }
@@ -748,22 +774,40 @@ class VideoIndexer(private val context: Context) {
             retriever.setDataSource(file.absolutePath)
             durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
 
-            val sampleTimesUs = listOf(600_000L, 2_500_000L)
+            val hasMeaningfulSpeech = !isWeakSpokenFiller(spokenText)
+            val sampleTimesUs = listOf(700_000L, 2_200_000L, 4_000_000L)
+            var didSceneLabel = false
             for (timeUs in sampleTimesUs) {
-                if (timeUs > durationMs * 1000L && timeUs > 600_000L) continue
-                val bitmap = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                if (bitmap != null) {
-                    val inputImage = InputImage.fromBitmap(bitmap, 0)
-                    val result = ocrRecognizer.process(inputImage).await()
-                    val cleanLines = filterWatermarks(result.text)
-                    if (cleanLines.isNotEmpty()) screenTexts.add(cleanLines)
+                if (timeUs > durationMs * 1000L && timeUs > 700_000L) continue
+                val rawBitmap = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: continue
+                val maxDim = maxOf(rawBitmap.width, rawBitmap.height)
+                val bitmap = if (maxDim > 720) {
+                    val scale = 720f / maxDim
+                    val scaled = Bitmap.createScaledBitmap(
+                        rawBitmap,
+                        (rawBitmap.width * scale).toInt().coerceAtLeast(1),
+                        (rawBitmap.height * scale).toInt().coerceAtLeast(1),
+                        true
+                    )
+                    if (scaled != rawBitmap) rawBitmap.recycle()
+                    scaled
+                } else {
+                    rawBitmap
+                }
 
-                    // Sadece hayvan/nesne/sahne varsa Türkçe etiketini al
+                val inputImage = InputImage.fromBitmap(bitmap, 0)
+                val result = ocrRecognizer.process(inputImage).await()
+                val cleanLines = filterWatermarks(result.text)
+                if (cleanLines.isNotEmpty()) screenTexts.add(cleanLines)
+
+                // Konuşma ve yazı yoksa sadece 1 karede hayvan/nesne/sahne etiketi al (hız için!)
+                if (!didSceneLabel && !hasMeaningfulSpeech && screenTexts.isEmpty()) {
                     val scene = extractStrictTurkishSceneLabels(inputImage)
                     if (scene.isNotEmpty()) sceneLabels.add(scene)
-
-                    bitmap.recycle()
+                    didSceneLabel = true
                 }
+
+                bitmap.recycle()
             }
         } catch (_: Exception) {
         } finally {
@@ -867,7 +911,7 @@ class VideoIndexer(private val context: Context) {
             val bufferInfo = MediaCodec.BufferInfo()
             var isEOS = false
             var totalProcessedTimeUs = 0L
-            val maxAudioDurationUs = 25_000_000L // İlk 25 saniye
+            val maxAudioDurationUs = 15_000_000L // İlk 15 saniye (hızlı & yeterli)
 
             // Tüm 16kHz Mono örnekleri biriktirip ses seviyesini normalize edeceğiz
             val mono16kOut = ByteArrayOutputStream(32000 * 15)

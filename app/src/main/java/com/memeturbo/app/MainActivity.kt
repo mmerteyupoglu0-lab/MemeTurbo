@@ -63,6 +63,7 @@ class MainActivity : AppCompatActivity() {
 
     private var savedScrollPosition = 0
     private var savedScrollOffset = 0
+    private var isRestoringScroll = false
 
     private lateinit var tabAllBtn: Button
     private lateinit var tabVideosBtn: Button
@@ -288,10 +289,8 @@ class MainActivity : AppCompatActivity() {
                         hideInternalPlayer()
                         return true
                     }
-                    if (!text.isNullOrEmpty()) {
-                        clearSearchAndRestorePosition()
-                        return true
-                    }
+                    // Klavye açıkken geri tuşuna basınca aramayı silmeden sadece klavyeyi indir
+                    clearFocus()
                 }
                 return super.onKeyPreIme(keyCode, event)
             }
@@ -343,7 +342,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
                     super.onScrolled(recyclerView, dx, dy)
-                    if (searchInput.text.isNullOrEmpty()) {
+                    if (searchInput.text.isNullOrEmpty() && !isRestoringScroll && (dx != 0 || dy != 0)) {
                         val pos = gridLayoutManager.findFirstVisibleItemPosition()
                         if (pos != RecyclerView.NO_POSITION) {
                             savedScrollPosition = pos
@@ -421,6 +420,10 @@ class MainActivity : AppCompatActivity() {
     private fun setupBackButtonBehavior() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                val firstPos = gridLayoutManager.findFirstVisibleItemPosition()
+                val firstTop = if (firstPos == 0) (gridLayoutManager.findViewByPosition(0)?.top ?: 0) else 0
+                val isScrolledDown = firstPos > 0 || (firstPos == 0 && firstTop < -dpToPx(16f))
+
                 when {
                     internalPlayerLayout?.visibility == View.VISIBLE -> hideInternalPlayer()
                     !searchInput.text.isNullOrEmpty() -> clearSearchAndRestorePosition()
@@ -428,6 +431,11 @@ class MainActivity : AppCompatActivity() {
                         currentFilter = 0
                         updateTabColors()
                         filterList("", restoreScrollWhenEmpty = true, immediate = true)
+                    }
+                    isScrolledDown -> {
+                        savedScrollPosition = 0
+                        savedScrollOffset = 0
+                        galleryRecycler.smoothScrollToPosition(0)
                     }
                     else -> {
                         isEnabled = false
@@ -541,8 +549,12 @@ class MainActivity : AppCompatActivity() {
             }
 
             if (query.isEmpty() && restoreScrollWhenEmpty && savedScrollPosition > 0) {
+                isRestoringScroll = true
+                val targetPos = savedScrollPosition
+                val targetOffset = savedScrollOffset
                 galleryRecycler.post {
-                    gridLayoutManager.scrollToPositionWithOffset(savedScrollPosition, savedScrollOffset)
+                    gridLayoutManager.scrollToPositionWithOffset(targetPos, targetOffset)
+                    galleryRecycler.post { isRestoringScroll = false }
                 }
             }
         }
@@ -764,10 +776,6 @@ class MainActivity : AppCompatActivity() {
 
         val uri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", file)
         val mime = if (meme.isVideo) "video/*" else "image/*"
-
-        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val clip = ClipData.newUri(contentResolver, meme.fileName, uri)
-        clipboard.setPrimaryClip(clip)
 
         val shareIntent = Intent(Intent.ACTION_SEND).apply {
             type = mime

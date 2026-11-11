@@ -105,7 +105,7 @@ class ScanForegroundService : Service() {
                 wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MemeTurbo::ScanWakeLock")
             }
             if (wakeLock?.isHeld == false) {
-                wakeLock?.acquire(45 * 60 * 1000L) // Maksimum 45 dk güvenli kilit
+                wakeLock?.acquire(120 * 60 * 1000L) // Maksimum 2 saat güvenli kilit
             }
         } catch (_: Exception) {}
     }
@@ -188,7 +188,7 @@ class ScanForegroundService : Service() {
                         }
                     }
 
-                    if (curNum % 15 == 0) {
+                    if (curNum % 10 == 0) {
                         stateFlow.value = stateFlow.value.copy(refreshTick = stateFlow.value.refreshTick + 1)
                     }
                     delay(15) // CPU nefes alsın, telefon kasmasın
@@ -286,7 +286,7 @@ class ScanForegroundService : Service() {
                         }
                     }
 
-                    if (curNum % 15 == 0) {
+                    if (curNum % 10 == 0) {
                         stateFlow.value = stateFlow.value.copy(refreshTick = stateFlow.value.refreshTick + 1)
                     }
                     delay(15)
