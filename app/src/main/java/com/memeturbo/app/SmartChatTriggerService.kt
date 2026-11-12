@@ -68,7 +68,7 @@ class SmartChatTriggerService : AccessibilityService() {
 
             if (isInput) {
                 val now = System.currentTimeMillis()
-                if (now - lastClickTime in 100..550) {
+                if (now - lastClickTime in 60..750) {
                     showGameTurboSearchPanel()
                     lastClickTime = 0L
                 } else {

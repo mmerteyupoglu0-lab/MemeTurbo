@@ -95,16 +95,25 @@ class VideoIndexer(private val context: Context) {
         }
 
         private val weakVoskFillerWords = setOf(
-            "bilmiyorum", "bilmiyor", "bu", "ne", "ya", "ben", "on", "kim", "b", "d", "o", "e", "i",
-            "mu", "mü", "mi", "mı", "ve", "de", "da", "ki", "bi", "bir", "ama", "çok", "yok", "var"
+            "bilmiyorum", "bilmiyor", "biliyorum", "bilemedim", "bu", "ne", "ya", "ben", "on", "kim",
+            "b", "d", "o", "e", "i", "mu", "mü", "mi", "mı", "ve", "de", "da", "ki", "bi", "bir",
+            "ama", "çok", "yok", "var", "hayır", "hayir", "evet", "tamam", "geciyor", "geçiyor",
+            "niçin", "nicin", "sadece", "değil", "degil", "ürünleri", "urunleri", "bana", "bunu"
+        )
+
+        private val weakMultiWordPhrases = setOf(
+            "biliyorum ne bilmiyorum", "biliyorum biz", "biliyorum anna", "biliyorum love",
+            "biliyorum anlıyorum", "biliyorum anliyorum", "ne bilmiyorum", "iyi ürün", "mi ürün"
         )
 
         fun isWeakSpokenFiller(spoken: String): Boolean {
-            if (spoken.isBlank()) return true
-            val words = spoken.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+            val clean = spoken.replace("\u200B", "").trim().lowercase()
+            if (clean.isBlank()) return true
+            if (clean in weakMultiWordPhrases) return true
+            val words = clean.split(Regex("\\s+")).filter { it.isNotBlank() }
             if (words.isEmpty()) return true
             if (words.size == 1) {
-                val w = words[0].lowercase()
+                val w = words[0]
                 if (w.length <= 2 || w in weakVoskFillerWords) return true
             }
             return false
@@ -355,6 +364,34 @@ class VideoIndexer(private val context: Context) {
             "cartoon" to "🎨 Çizgi Film / Animasyon",
             "animation" to "🎨 Animasyon",
             "animated cartoon" to "🎨 Çizgi Film / Animasyon"
+        )
+
+        private val photoTurkishSceneMap = mapOf(
+            "selfie" to "🤳 Özçekim / Portre",
+            "portrait" to "🤳 Portre Fotoğraf",
+            "smile" to "😊 Gülümseyen Portre",
+            "crowd" to "👥 Kalabalık / Topluluk",
+            "event" to "🏛️ Salon / Etkinlik",
+            "audience" to "🏛️ Konferans / Kalabalık",
+            "room" to "🏠 İç Mekan / Oda",
+            "building" to "🏢 Bina / Dış Mekan",
+            "architecture" to "🏢 Bina / Sokak",
+            "road" to "🛣️ Sokak / Kaldırım",
+            "asphalt" to "🛣️ Sokak / Kaldırım",
+            "tree" to "🌳 Park / Ağaçlık",
+            "grass" to "🌿 Çimen / Park",
+            "lawn" to "🌿 Çimlerde Ortam",
+            "plant" to "🌿 Doğa / Park",
+            "leisure" to "🏕️ Açık Hava / Dinlenme",
+            "recreation" to "🏕️ Açık Hava / Etkinlik",
+            "muscle" to "🏋️ Spor / Antrenman",
+            "physical fitness" to "🏋️ Spor Salonu",
+            "paper" to "📄 Kağıt / Not / Belge",
+            "document" to "📄 Belge / Yazı",
+            "text" to "📝 Yazılı Görsel",
+            "screenshot" to "📱 Ekran Görüntüsü",
+            "food" to "🍽️ Yemek / Sofra",
+            "tableware" to "🍽️ Masa / Sofra"
         )
 
         // Dosya adında veya metinde geçen ünlü meme karakterlerini tanıyan yardımcı sözlük
@@ -759,6 +796,23 @@ class VideoIndexer(private val context: Context) {
     }
 
     suspend fun extractImageData(file: File, albumName: String = ""): MemeVideo {
+        // 1. ÖNCELİK: İnternet varsa Çevrimiçi Görsel/Mizah Ajanı (Llama 4 Vision) ile detaylı Türkçe analiz!
+        val onlineRes = OnlineAiAnalyzer.analyzeImageWithAi(context, file)
+        if (onlineRes != null && (onlineRes.screenText.isNotBlank() || onlineRes.visualLabels.isNotBlank())) {
+            return MemeVideo(
+                filePath = file.absolutePath,
+                fileName = file.nameWithoutExtension,
+                durationMs = 0L,
+                spokenText = "",
+                screenText = onlineRes.screenText,
+                visualLabels = onlineRes.visualLabels,
+                isVideo = false,
+                lastModified = file.lastModified(),
+                albumName = albumName
+            )
+        }
+
+        // 2. YEDEK (Çevrimdışı): ML Kit OCR + Genişletilmiş Türkçe Fotoğraf Etiketleri
         var screenText = ""
         var visualScene = ""
 
@@ -771,7 +825,7 @@ class VideoIndexer(private val context: Context) {
                 screenText = filterWatermarks(ocrResult.text)
 
                 if (screenText.isEmpty()) {
-                    visualScene = extractStrictTurkishSceneLabels(inputImage)
+                    visualScene = extractPhotoTurkishSceneLabels(inputImage)
                 }
                 bitmap.recycle()
             }
@@ -792,8 +846,39 @@ class VideoIndexer(private val context: Context) {
         )
     }
 
+    private suspend fun extractPhotoTurkishSceneLabels(inputImage: InputImage): String {
+        val found = mutableSetOf<String>()
+        try {
+            val results = imageLabeler.process(inputImage).await()
+            for (lbl in results) {
+                val key = lbl.text.lowercase()
+                val trName = strictTurkishVisualMap[key] ?: photoTurkishSceneMap[key]
+                if (trName != null) {
+                    found.add(trName)
+                }
+            }
+        } catch (_: Exception) {}
+        return found.take(2).joinToString(" • ")
+    }
+
     suspend fun extractVideoData(file: File, voskModel: Model?, albumName: String = ""): MemeVideo = coroutineScope {
-        // SES (Vosk) ve GÖRÜNTÜ (Altyazı OCR) AYNI ANDA PARALEL ÇALIŞIR -> %100 Güvenli & 3x Hızlı!
+        // 1. ÖNCELİK: İnternet varsa Çevrimiçi Çoklu Ajan (Groq Whisper Large v3 Turbo + Llama 4 Vision 2x2 Kolaj)
+        val onlineRes = OnlineAiAnalyzer.analyzeVideoWithAi(context, file, this@VideoIndexer)
+        if (onlineRes != null && (onlineRes.spokenText.isNotBlank() || onlineRes.screenText.isNotBlank() || onlineRes.visualLabels.isNotBlank())) {
+            return@coroutineScope MemeVideo(
+                filePath = file.absolutePath,
+                fileName = file.nameWithoutExtension,
+                durationMs = onlineRes.durationMs,
+                spokenText = onlineRes.spokenText,
+                screenText = onlineRes.screenText,
+                visualLabels = onlineRes.visualLabels,
+                isVideo = true,
+                lastModified = file.lastModified(),
+                albumName = albumName
+            )
+        }
+
+        // 2. YEDEK (Çevrimdışı): SES (Vosk) ve GÖRÜNTÜ (Altyazı OCR) AYNI ANDA PARALEL ÇALIŞIR
         val spokenDeferred = async(Dispatchers.Default) {
             if (voskModel != null) transcribeVideoAudio(file, voskModel) else ""
         }
@@ -910,6 +995,98 @@ class VideoIndexer(private val context: Context) {
 
     fun transcribeSingleVideo(videoFile: File, voskModel: Model): String {
         return transcribeVideoAudio(videoFile, voskModel)
+    }
+
+    /**
+     * Çevrimiçi Whisper Large v3 Turbo Ajanı için videonun ilk N saniyesindeki sesi
+     * 16kHz Mono PCM olarak hızlıca çıkartır ve ses seviyesini normalize eder.
+     */
+    fun extractPcm16kMonoForAi(videoFile: File, maxSeconds: Int = 16): ByteArray {
+        val extractor = MediaExtractor()
+        var codec: MediaCodec? = null
+        val mono16kOut = ByteArrayOutputStream(32000 * maxSeconds)
+        try {
+            extractor.setDataSource(videoFile.absolutePath)
+            var audioTrackIndex = -1
+            var format: MediaFormat? = null
+            for (i in 0 until extractor.trackCount) {
+                val trackFormat = extractor.getTrackFormat(i)
+                val mime = trackFormat.getString(MediaFormat.KEY_MIME) ?: ""
+                if (mime.startsWith("audio/")) {
+                    audioTrackIndex = i
+                    format = trackFormat
+                    break
+                }
+            }
+            if (audioTrackIndex == -1 || format == null) return ByteArray(0)
+            extractor.selectTrack(audioTrackIndex)
+            val mime = format.getString(MediaFormat.KEY_MIME) ?: return ByteArray(0)
+            var pcmSampleRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) format.getInteger(MediaFormat.KEY_SAMPLE_RATE) else 44100
+            var pcmChannels = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 1
+            try {
+                format.setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
+            } catch (_: Exception) {}
+
+            codec = MediaCodec.createDecoderByType(mime)
+            codec.configure(format, null, null, 0)
+            codec.start()
+
+            val bufferInfo = MediaCodec.BufferInfo()
+            var isEOS = false
+            var totalProcessedTimeUs = 0L
+            val maxAudioDurationUs = maxSeconds * 1_000_000L
+
+            while (!isEOS && totalProcessedTimeUs < maxAudioDurationUs) {
+                val inIndex = codec.dequeueInputBuffer(8_000)
+                if (inIndex >= 0) {
+                    val inputBuffer = codec.getInputBuffer(inIndex)
+                    if (inputBuffer != null) {
+                        val sampleSize = extractor.readSampleData(inputBuffer, 0)
+                        if (sampleSize < 0) {
+                            codec.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            isEOS = true
+                        } else {
+                            totalProcessedTimeUs = extractor.sampleTime
+                            codec.queueInputBuffer(inIndex, 0, sampleSize, totalProcessedTimeUs, 0)
+                            extractor.advance()
+                        }
+                    }
+                }
+                var outIndex = codec.dequeueOutputBuffer(bufferInfo, 8_000)
+                while (outIndex >= 0 || outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        val outFormat = codec.outputFormat
+                        if (outFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                            pcmSampleRate = outFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                        }
+                        if (outFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                            pcmChannels = outFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                        }
+                    } else if (outIndex >= 0) {
+                        val outputBuffer = codec.getOutputBuffer(outIndex)
+                        if (outputBuffer != null && bufferInfo.size > 0) {
+                            outputBuffer.position(bufferInfo.offset)
+                            outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
+                            val pcmBytes = ByteArray(bufferInfo.size)
+                            outputBuffer.get(pcmBytes)
+                            val resampled = resampleTo16kMonoBytes(pcmBytes, pcmSampleRate, pcmChannels)
+                            if (resampled.isNotEmpty()) {
+                                mono16kOut.write(resampled)
+                            }
+                        }
+                        codec.releaseOutputBuffer(outIndex, false)
+                    }
+                    outIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
+                }
+            }
+            return normalizeAudioGain(mono16kOut.toByteArray())
+        } catch (_: Exception) {
+            return ByteArray(0)
+        } finally {
+            try { codec?.stop() } catch (_: Exception) {}
+            try { codec?.release() } catch (_: Exception) {}
+            try { extractor.release() } catch (_: Exception) {}
+        }
     }
 
     /**

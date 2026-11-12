@@ -182,13 +182,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         val repairBtn = Button(this).apply {
-            text = "🔧 Sesleri Çöz"
+            text = "🌐 AI Çözümle"
             textSize = 11f
             setTextColor(Color.WHITE)
             isAllCaps = false
             background = GradientDrawable().apply {
                 cornerRadius = dpToPx(12f).toFloat()
-                setColor(Color.parseColor("#D97706"))
+                setColor(Color.parseColor("#7C3AED"))
             }
             layoutParams = LinearLayout.LayoutParams(0, dpToPx(40f), 1f)
             setOnClickListener { startRepairService() }
@@ -465,8 +465,11 @@ class MainActivity : AppCompatActivity() {
                     lastObservedTick = st.refreshTick
                     if (st.refreshTick > 0) {
                         cachedAllMemes = null
-                        VideoIndexer.clearAllCaches()
-                        filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false, immediate = true)
+                        val currentQuery = searchInput.text?.toString()?.trim() ?: ""
+                        // Kullanıcı o an arama kutusunda yazı yazıyorsa ekranı zorla yenileyip dondurma (ANR'yi %100 önler!)
+                        if (!searchInput.hasFocus() || !st.isRunning) {
+                            filterList(currentQuery, restoreScrollWhenEmpty = false, immediate = false)
+                        }
                     }
                 }
             }
@@ -511,8 +514,42 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startRepairService() {
+        val albumLabel = if (availableAlbums.isNotEmpty() && albumSpinner.selectedItemPosition in availableAlbums.indices) {
+            availableAlbums[albumSpinner.selectedItemPosition].name
+        } else {
+            "Tüm Galeri"
+        }
+
+        val onlineStatus = if (OnlineAiAnalyzer.isOnline(this)) {
+            "🟢 İnternet bağlı: Çoklu Ajan (Groq Whisper Turbo + Llama 4 Vision) aktif!"
+        } else {
+            "🟠 İnternet bağlı değil: Çevrimdışı yedek motor kullanılacak."
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("🌐 Çoklu Ajan AI Çözümleme")
+            .setMessage(
+                "Seçili albüm: $albumLabel\n\n" +
+                "$onlineStatus\n\n" +
+                "• Ses Ajanı şarkı sözlerini ve replikleri dinler.\n" +
+                "• Görsel Ajan 4 karelik kolajdan karaoke altyazıları ve fotoğrafları Türkçe betimler.\n" +
+                "• 100 medya sadece ~10 MB internet harcar.\n" +
+                "• ✏️ ile elle düzelttiğin kayıtlara kesinlikle dokunulmaz."
+            )
+            .setPositiveButton("⚡ Sadece Eksik/Bozukları Çöz") { _, _ ->
+                launchRepairIntent(forceFullAlbum = false)
+            }
+            .setNeutralButton("🔥 Tüm Albümü AI ile Yenile") { _, _ ->
+                launchRepairIntent(forceFullAlbum = true)
+            }
+            .setNegativeButton("İptal", null)
+            .show()
+    }
+
+    private fun launchRepairIntent(forceFullAlbum: Boolean) {
         val intent = Intent(this, ScanForegroundService::class.java).apply {
             action = ScanForegroundService.ACTION_START_REPAIR
+            putExtra(ScanForegroundService.EXTRA_FORCE_FULL_ALBUM, forceFullAlbum)
             if (availableAlbums.isNotEmpty() && albumSpinner.selectedItemPosition in availableAlbums.indices) {
                 val selectedAlbum = availableAlbums[albumSpinner.selectedItemPosition]
                 putExtra(ScanForegroundService.EXTRA_ALBUM_NAME, selectedAlbum.name)
@@ -721,12 +758,65 @@ class MainActivity : AppCompatActivity() {
             ).apply { topMargin = dpToPx(14f) }
         }
 
-        val fixBtn = Button(this).apply {
-            text = "✏️ Repliği Düzelt"
+        val aiSingleBtn = Button(this).apply {
+            text = "🌐 AI ile Bul"
             setTextColor(Color.WHITE)
-            textSize = 12f
+            textSize = 11f
             isAllCaps = false
-            setPadding(dpToPx(14f), 0, dpToPx(14f), 0)
+            setPadding(dpToPx(12f), 0, dpToPx(12f), 0)
+            background = GradientDrawable().apply {
+                cornerRadius = dpToPx(16f).toFloat()
+                setColor(Color.parseColor("#7C3AED"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                dpToPx(38f)
+            ).apply { rightMargin = dpToPx(8f) }
+            setOnClickListener {
+                val target = currentPreviewMeme ?: return@setOnClickListener
+                if (!OnlineAiAnalyzer.isOnline(this@MainActivity)) {
+                    Toast.makeText(this@MainActivity, "⚠️ İnternet bağlantısı gerekli!", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                Toast.makeText(this@MainActivity, "🌐 AI videoyu/görseli çözümlüyor...", Toast.LENGTH_SHORT).show()
+                lifecycleScope.launch {
+                    val file = File(target.filePath)
+                    val indexer = VideoIndexer(this@MainActivity)
+                    val aiRes = if (target.isVideo) {
+                        OnlineAiAnalyzer.analyzeVideoWithAi(this@MainActivity, file, indexer)
+                    } else {
+                        OnlineAiAnalyzer.analyzeImageWithAi(this@MainActivity, file)
+                    }
+                    if (aiRes != null) {
+                        val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
+                        db.updateFields(
+                            path = target.filePath,
+                            spokenText = aiRes.spokenText,
+                            screenText = aiRes.screenText,
+                            visualLabels = aiRes.visualLabels
+                        )
+                        val prefs = getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+                        val editedSet = prefs.getStringSet("user_edited_paths", emptySet())?.toMutableSet() ?: mutableSetOf()
+                        editedSet.add(target.filePath)
+                        prefs.edit().putStringSet("user_edited_paths", editedSet).apply()
+                        cachedAllMemes = null
+                        VideoIndexer.invalidateCacheFor(target.filePath)
+                        val summary = aiRes.spokenText.ifBlank { aiRes.screenText.ifBlank { aiRes.visualLabels } }
+                        Toast.makeText(this@MainActivity, "✅ AI Buldu: $summary", Toast.LENGTH_LONG).show()
+                        filterList(searchInput.text.toString().trim(), immediate = true)
+                    } else {
+                        Toast.makeText(this@MainActivity, "⚠️ AI sonuç çıkaramadı, tekrar deneyin.", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+
+        val fixBtn = Button(this).apply {
+            text = "✏️ Elle Düzelt"
+            setTextColor(Color.WHITE)
+            textSize = 11f
+            isAllCaps = false
+            setPadding(dpToPx(12f), 0, dpToPx(12f), 0)
             background = GradientDrawable().apply {
                 cornerRadius = dpToPx(16f).toFloat()
                 setColor(Color.parseColor("#D97706"))
@@ -734,7 +824,7 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 dpToPx(38f)
-            ).apply { rightMargin = dpToPx(10f) }
+            ).apply { rightMargin = dpToPx(8f) }
             setOnClickListener {
                 currentPreviewMeme?.let { m ->
                     hideInternalPlayer()
@@ -746,16 +836,17 @@ class MainActivity : AppCompatActivity() {
         val closeBtn = Button(this).apply {
             text = "✕ Kapat"
             setTextColor(Color.WHITE)
-            textSize = 12f
+            textSize = 11f
             isAllCaps = false
             background = GradientDrawable().apply {
                 cornerRadius = dpToPx(16f).toFloat()
                 setColor(Color.parseColor("#334155"))
             }
-            layoutParams = LinearLayout.LayoutParams(dpToPx(110f), dpToPx(38f))
+            layoutParams = LinearLayout.LayoutParams(dpToPx(90f), dpToPx(38f))
             setOnClickListener { hideInternalPlayer() }
         }
 
+        btnRow.addView(aiSingleBtn)
         btnRow.addView(fixBtn)
         btnRow.addView(closeBtn)
 

@@ -17,6 +17,8 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 class MemeGridAdapter(
     private val onPreviewClick: (MemeVideo) -> Unit,
@@ -28,6 +30,7 @@ class MemeGridAdapter(
     private val adapterScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     companion object {
+        private val thumbSemaphore = Semaphore(3)
         private val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt()
         private val cacheSize = maxMemory / 8
         val memoryCache = object : LruCache<String, Bitmap>(cacheSize) {
@@ -152,15 +155,23 @@ class MemeGridAdapter(
             holder.thumbView.setImageBitmap(null)
             holder.thumbJob = adapterScope.launch {
                 val bitmap = withContext(Dispatchers.IO) {
-                    try {
-                        if (meme.isVideo) {
-                            @Suppress("DEPRECATION")
-                            ThumbnailUtils.createVideoThumbnail(meme.filePath, MediaStore.Images.Thumbnails.MINI_KIND)
-                        } else {
-                            val opts = BitmapFactory.Options().apply { inSampleSize = 4 }
-                            BitmapFactory.decodeFile(meme.filePath, opts)
-                        }
-                    } catch (_: Exception) { null }
+                    thumbSemaphore.withPermit {
+                        try {
+                            if (meme.isVideo) {
+                                @Suppress("DEPRECATION")
+                                ThumbnailUtils.createVideoThumbnail(meme.filePath, MediaStore.Images.Thumbnails.MINI_KIND)
+                            } else {
+                                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                                BitmapFactory.decodeFile(meme.filePath, bounds)
+                                var sample = 1
+                                while (bounds.outWidth / sample > 320 || bounds.outHeight / sample > 320) {
+                                    sample *= 2
+                                }
+                                val opts = BitmapFactory.Options().apply { inSampleSize = sample.coerceAtLeast(2) }
+                                BitmapFactory.decodeFile(meme.filePath, opts)
+                            }
+                        } catch (_: Exception) { null }
+                    }
                 }
                 if (bitmap != null) {
                     memoryCache.put(meme.filePath, bitmap)
@@ -173,6 +184,7 @@ class MemeGridAdapter(
 
         holder.transcriptView.text = VideoIndexer.getCachedDisplaySnippet(meme)
 
+        holder.thumbView.setOnClickListener { onPreviewClick(meme) }
         holder.playBtn.visibility = if (meme.isVideo) View.VISIBLE else View.GONE
         holder.playBtn.setOnClickListener { onPreviewClick(meme) }
         holder.sendBtn.setOnClickListener { onSendClick(meme) }
