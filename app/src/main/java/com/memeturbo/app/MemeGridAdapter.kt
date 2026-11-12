@@ -15,6 +15,7 @@ import android.widget.Button
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
@@ -28,9 +29,14 @@ class MemeGridAdapter(
 
     private val items = mutableListOf<MemeVideo>()
     private val adapterScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var diffJob: Job? = null
+
+    init {
+        setHasStableIds(true)
+    }
 
     companion object {
-        private val thumbSemaphore = Semaphore(3)
+        private val thumbSemaphore = Semaphore(2)
         private val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt()
         private val cacheSize = maxMemory / 8
         val memoryCache = object : LruCache<String, Bitmap>(cacheSize) {
@@ -40,11 +46,51 @@ class MemeGridAdapter(
         }
     }
 
+    override fun getItemId(position: Int): Long {
+        return items[position].filePath.hashCode().toLong()
+    }
+
+    /**
+     * V12.0 Sıfır Donma (Zero-ANR) Liste Güncellemesi:
+     * Tam liste yenileme (notifyDataSetChanged) yerine sadece değişen kartları arka planda
+     * DiffUtil ile hesaplayıp günceller. Böylece 148 fotoğrafın küçük resmi aynı anda baştan yüklenmez!
+     */
     fun submitList(newItems: List<MemeVideo>, onCommitted: (() -> Unit)? = null) {
-        items.clear()
-        items.addAll(newItems)
-        notifyDataSetChanged()
-        onCommitted?.invoke()
+        diffJob?.cancel()
+        val oldSnapshot = ArrayList(items)
+        if (oldSnapshot.isEmpty() || newItems.isEmpty()) {
+            items.clear()
+            items.addAll(newItems)
+            notifyDataSetChanged()
+            onCommitted?.invoke()
+            return
+        }
+
+        diffJob = adapterScope.launch {
+            val diffResult = withContext(Dispatchers.Default) {
+                DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+                    override fun getOldListSize(): Int = oldSnapshot.size
+                    override fun getNewListSize(): Int = newItems.size
+
+                    override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                        return oldSnapshot[oldItemPosition].filePath == newItems[newItemPosition].filePath
+                    }
+
+                    override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                        val o = oldSnapshot[oldItemPosition]
+                        val n = newItems[newItemPosition]
+                        return o.spokenText == n.spokenText &&
+                            o.screenText == n.screenText &&
+                            o.visualLabels == n.visualLabels &&
+                            o.albumName == n.albumName
+                    }
+                }, false)
+            }
+            items.clear()
+            items.addAll(newItems)
+            diffResult.dispatchUpdatesTo(this@MemeGridAdapter)
+            onCommitted?.invoke()
+        }
     }
 
     private fun dpToPx(view: View, dp: Float): Int {
@@ -147,36 +193,44 @@ class MemeGridAdapter(
     override fun onBindViewHolder(holder: MemeViewHolder, position: Int) {
         val meme = items[position]
 
-        holder.thumbJob?.cancel()
-        val cached = memoryCache.get(meme.filePath)
-        if (cached != null) {
-            holder.thumbView.setImageBitmap(cached)
-        } else {
-            holder.thumbView.setImageBitmap(null)
-            holder.thumbJob = adapterScope.launch {
-                val bitmap = withContext(Dispatchers.IO) {
-                    thumbSemaphore.withPermit {
-                        try {
-                            if (meme.isVideo) {
-                                @Suppress("DEPRECATION")
-                                ThumbnailUtils.createVideoThumbnail(meme.filePath, MediaStore.Images.Thumbnails.MINI_KIND)
-                            } else {
-                                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                                BitmapFactory.decodeFile(meme.filePath, bounds)
-                                var sample = 1
-                                while (bounds.outWidth / sample > 320 || bounds.outHeight / sample > 320) {
-                                    sample *= 2
+        if (holder.boundPath != meme.filePath) {
+            holder.boundPath = meme.filePath
+            holder.thumbJob?.cancel()
+            val cached = memoryCache.get(meme.filePath)
+            if (cached != null) {
+                holder.thumbView.setImageBitmap(cached)
+            } else {
+                holder.thumbView.setImageBitmap(null)
+                val targetPath = meme.filePath
+                val isVid = meme.isVideo
+                holder.thumbJob = adapterScope.launch {
+                    val bitmap = withContext(Dispatchers.IO) {
+                        thumbSemaphore.withPermit {
+                            try {
+                                if (isVid) {
+                                    @Suppress("DEPRECATION")
+                                    ThumbnailUtils.createVideoThumbnail(targetPath, MediaStore.Images.Thumbnails.MINI_KIND)
+                                } else {
+                                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                                    BitmapFactory.decodeFile(targetPath, bounds)
+                                    var sample = 1
+                                    while (bounds.outWidth / sample > 260 || bounds.outHeight / sample > 260) {
+                                        sample *= 2
+                                    }
+                                    val opts = BitmapFactory.Options().apply {
+                                        inSampleSize = sample.coerceAtLeast(2)
+                                        inPreferredConfig = Bitmap.Config.RGB_565
+                                    }
+                                    BitmapFactory.decodeFile(targetPath, opts)
                                 }
-                                val opts = BitmapFactory.Options().apply { inSampleSize = sample.coerceAtLeast(2) }
-                                BitmapFactory.decodeFile(meme.filePath, opts)
-                            }
-                        } catch (_: Exception) { null }
+                            } catch (_: Exception) { null }
+                        }
                     }
-                }
-                if (bitmap != null) {
-                    memoryCache.put(meme.filePath, bitmap)
-                    if (holder.bindingAdapterPosition == position) {
-                        holder.thumbView.setImageBitmap(bitmap)
+                    if (bitmap != null) {
+                        memoryCache.put(targetPath, bitmap)
+                        if (holder.boundPath == targetPath) {
+                            holder.thumbView.setImageBitmap(bitmap)
+                        }
                     }
                 }
             }
@@ -200,6 +254,7 @@ class MemeGridAdapter(
         val playBtn: Button,
         val sendBtn: Button,
         val editTagBtn: TextView,
-        var thumbJob: Job? = null
+        var thumbJob: Job? = null,
+        var boundPath: String? = null
     ) : RecyclerView.ViewHolder(view)
 }

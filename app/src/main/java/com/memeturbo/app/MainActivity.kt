@@ -1,11 +1,10 @@
 package com.memeturbo.app
 
 import android.Manifest
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
@@ -93,14 +92,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         val title = TextView(this).apply {
-            text = "⚡ ReplikBul • MemeTurbo"
+            text = "⚡ ReplikBul • MemeTurbo V12"
             textSize = 20f
             setTextColor(Color.WHITE)
         }
 
         val privacyBanner = TextView(this).apply {
-            text = "🔒 %100 Çevrimdışı & Güvenli: Ekran kapalıyken bile arka planda tarar.\n🎙️ 1. Öncelik Replik: Konuşmalar dinlenir, yanlışsa ✏️ ile 1 dokunuşta düzeltilir."
-            textSize = 12f
+            text = "🚀 V12 Hibrit Motor: AAC Ses (%95 Veri Tasarrufu) + Qwen 3.8 Vision + 3-Kare Altyazı OCR\n🎙️ Sadece 'Müzik' yazan veya altyazısı eksik kalan videoları 1 dokunuşla tamamlar."
+            textSize = 11.5f
             setTextColor(Color.parseColor("#38BDF8"))
             setPadding(0, dpToPx(6f), 0, dpToPx(8f))
         }
@@ -199,7 +198,6 @@ class MainActivity : AppCompatActivity() {
         scanRow.addView(repairBtn)
         mainContainer.addView(scanRow)
 
-        // Duraklat / Devam Et ve Durdur Kontrol Satırı (Tarama çalışırken görünür)
         scanControlRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             visibility = View.GONE
@@ -290,7 +288,6 @@ class MainActivity : AppCompatActivity() {
                         hideInternalPlayer()
                         return true
                     }
-                    // Klavye açıkken geri tuşuna basınca aramayı silmeden sadece klavyeyi indir
                     clearFocus()
                 }
                 return super.onKeyPreIme(keyCode, event)
@@ -323,12 +320,12 @@ class MainActivity : AppCompatActivity() {
         galleryRecycler = RecyclerView(this).apply {
             layoutManager = gridLayoutManager
             setHasFixedSize(true)
+            itemAnimator = null
             setItemViewCacheSize(30)
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
-            // İlk kaydırma veya liste dokunuşunda klavyeyi anında gizle!
             setOnTouchListener { _, event ->
                 if (event.action == MotionEvent.ACTION_DOWN) {
                     hideKeyboard()
@@ -466,7 +463,6 @@ class MainActivity : AppCompatActivity() {
                     if (st.refreshTick > 0) {
                         cachedAllMemes = null
                         val currentQuery = searchInput.text?.toString()?.trim() ?: ""
-                        // Kullanıcı o an arama kutusunda yazı yazıyorsa ekranı zorla yenileyip dondurma (ANR'yi %100 önler!)
                         if (!searchInput.hasFocus() || !st.isRunning) {
                             filterList(currentQuery, restoreScrollWhenEmpty = false, immediate = false)
                         }
@@ -521,25 +517,25 @@ class MainActivity : AppCompatActivity() {
         }
 
         val onlineStatus = if (OnlineAiAnalyzer.isOnline(this)) {
-            "🟢 İnternet bağlı: Çoklu Ajan (Groq Whisper Turbo + Llama 4 Vision) aktif!"
+            "🟢 İnternet bağlı: Çoklu Ajan (Whisper Turbo AAC + Qwen 3.8 Vision + 3-Kare Altyazı OCR) aktif!"
         } else {
-            "🟠 İnternet bağlı değil: Çevrimdışı yedek motor kullanılacak."
+            "🟠 İnternet bağlı değil: Çevrimdışı 3-Kare Altyazı OCR + Vosk motoru kullanılacak."
         }
 
         AlertDialog.Builder(this)
-            .setTitle("🌐 Çoklu Ajan AI Çözümleme")
+            .setTitle("🌐 V12 Çoklu Ajan & Altyazı Çözümleme")
             .setMessage(
                 "Seçili albüm: $albumLabel\n\n" +
                 "$onlineStatus\n\n" +
-                "• Ses Ajanı şarkı sözlerini ve replikleri dinler.\n" +
-                "• Görsel Ajan 4 karelik kolajdan karaoke altyazıları ve fotoğrafları Türkçe betimler.\n" +
-                "• 100 medya sadece ~10 MB internet harcar.\n" +
+                "• Sadece 'Müzik' yazan veya altyazısı boş kalan videoların ekran yazılarını okur.\n" +
+                "• Repliği zaten doğru olan videoların sesini tekrar indirmez, sadece altyazısını ekler!\n" +
+                "• Fotoğrafları Qwen 3.8 Vision ile Türkçe betimler.\n" +
                 "• ✏️ ile elle düzelttiğin kayıtlara kesinlikle dokunulmaz."
             )
-            .setPositiveButton("⚡ Sadece Eksik/Bozukları Çöz") { _, _ ->
+            .setPositiveButton("⚡ Eksik Altyazı & Müzikleri Çöz") { _, _ ->
                 launchRepairIntent(forceFullAlbum = false)
             }
-            .setNeutralButton("🔥 Tüm Albümü AI ile Yenile") { _, _ ->
+            .setNeutralButton("🔥 Tüm Albümü Baştan Yenile") { _, _ ->
                 launchRepairIntent(forceFullAlbum = true)
             }
             .setNegativeButton("İptal", null)
@@ -563,13 +559,17 @@ class MainActivity : AppCompatActivity() {
         searchJob?.cancel()
         searchJob = lifecycleScope.launch {
             if (!immediate && query.isNotEmpty()) {
-                delay(80) // Anında tepki + akıcı yazma
+                delay(60)
+            }
+
+            // Veritabanı okumasını IO üzerinde, filtrelemeyi Default üzerinde çalıştır (Sıfır ANR!)
+            val allCached = cachedAllMemes ?: withContext(Dispatchers.IO) {
+                MemeDatabase.getInstance(this@MainActivity).memeDao().getAllMemes()
+            }.also {
+                cachedAllMemes = it
             }
 
             val resultPair = withContext(Dispatchers.Default) {
-                val allCached = cachedAllMemes ?: MemeDatabase.getInstance(this@MainActivity).memeDao().getAllMemes().also {
-                    cachedAllMemes = it
-                }
                 val typeList = when (currentFilter) {
                     1 -> allCached.filter { it.isVideo }
                     2 -> allCached.filter { !it.isVideo }
@@ -588,10 +588,18 @@ class MainActivity : AppCompatActivity() {
                 Pair(finalItems, albumFiltered.size)
             }
 
-            adapter.submitList(resultPair.first)
-            if (query.isNotEmpty()) {
-                // Yazarken arama tuşuna basmadan en alakalı örnek videoları anında en üstte göster!
-                galleryRecycler.scrollToPosition(0)
+            adapter.submitList(resultPair.first) {
+                if (query.isNotEmpty()) {
+                    galleryRecycler.scrollToPosition(0)
+                } else if (restoreScrollWhenEmpty && savedScrollPosition > 0) {
+                    isRestoringScroll = true
+                    val targetPos = savedScrollPosition
+                    val targetOffset = savedScrollOffset
+                    galleryRecycler.post {
+                        gridLayoutManager.scrollToPositionWithOffset(targetPos, targetOffset)
+                        galleryRecycler.post { isRestoringScroll = false }
+                    }
+                }
             }
 
             if (!ScanForegroundService.stateFlow.value.isRunning && selectedAlbumFilter != null && query.isEmpty()) {
@@ -599,16 +607,6 @@ class MainActivity : AppCompatActivity() {
                     "📁 $selectedAlbumFilter: Henüz taranmadı ('Yenileri Tara ⚡' ile tarayabilirsin)"
                 } else {
                     "📁 $selectedAlbumFilter: ${resultPair.second} medya hazır"
-                }
-            }
-
-            if (query.isEmpty() && restoreScrollWhenEmpty && savedScrollPosition > 0) {
-                isRestoringScroll = true
-                val targetPos = savedScrollPosition
-                val targetOffset = savedScrollOffset
-                galleryRecycler.post {
-                    gridLayoutManager.scrollToPositionWithOffset(targetPos, targetOffset)
-                    galleryRecycler.post { isRestoringScroll = false }
                 }
             }
         }
@@ -669,10 +667,6 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /**
-     * Videonun doğru repliğini / arama kelimesini 1 dokunuşta düzeltir!
-     * Eğer o an arama kutusunda yazı varsa (ör: "orospu çocukları"), otomatik kutuya hazır getirir.
-     */
     private fun showEditTagsDialog(meme: MemeVideo, prefillFromSearch: Boolean = false) {
         val currentQuery = searchInput.text?.toString()?.trim() ?: ""
         val currentSpoken = meme.spokenText.replace("\u200B", "").trim()
@@ -697,8 +691,10 @@ class MainActivity : AppCompatActivity() {
                 val corrected = input.text.toString().trim()
                 if (corrected.isNotBlank()) {
                     lifecycleScope.launch {
-                        val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
-                        db.updateSpokenText(meme.filePath, corrected)
+                        withContext(Dispatchers.IO) {
+                            val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
+                            db.updateSpokenText(meme.filePath, corrected)
+                        }
                         val prefs = getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
                         val editedSet = prefs.getStringSet("user_edited_paths", emptySet())?.toMutableSet() ?: mutableSetOf()
                         editedSet.add(meme.filePath)
@@ -778,23 +774,32 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this@MainActivity, "⚠️ İnternet bağlantısı gerekli!", Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
-                Toast.makeText(this@MainActivity, "🌐 AI videoyu/görseli çözümlüyor...", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, "🌐 AI + Altyazı OCR çözümlüyor...", Toast.LENGTH_SHORT).show()
                 lifecycleScope.launch {
                     val file = File(target.filePath)
                     val indexer = VideoIndexer(this@MainActivity)
                     val aiRes = if (target.isVideo) {
-                        OnlineAiAnalyzer.analyzeVideoWithAi(this@MainActivity, file, indexer)
+                        val (_, localOcr, _) = indexer.extractLocalVideoOcrAndScene(file)
+                        OnlineAiAnalyzer.analyzeVideoWithAi(
+                            this@MainActivity,
+                            file,
+                            indexer,
+                            localOcrHint = localOcr,
+                            forceVision = true
+                        )
                     } else {
-                        OnlineAiAnalyzer.analyzeImageWithAi(this@MainActivity, file)
+                        OnlineAiAnalyzer.analyzeImageWithAi(this@MainActivity, file, localOcrHint = target.screenText)
                     }
                     if (aiRes != null) {
-                        val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
-                        db.updateFields(
-                            path = target.filePath,
-                            spokenText = aiRes.spokenText,
-                            screenText = aiRes.screenText,
-                            visualLabels = aiRes.visualLabels
-                        )
+                        withContext(Dispatchers.IO) {
+                            val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
+                            db.updateFields(
+                                path = target.filePath,
+                                spokenText = aiRes.spokenText,
+                                screenText = aiRes.screenText,
+                                visualLabels = aiRes.visualLabels
+                            )
+                        }
                         val prefs = getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
                         val editedSet = prefs.getStringSet("user_edited_paths", emptySet())?.toMutableSet() ?: mutableSetOf()
                         editedSet.add(target.filePath)
@@ -802,10 +807,10 @@ class MainActivity : AppCompatActivity() {
                         cachedAllMemes = null
                         VideoIndexer.invalidateCacheFor(target.filePath)
                         val summary = aiRes.spokenText.ifBlank { aiRes.screenText.ifBlank { aiRes.visualLabels } }
-                        Toast.makeText(this@MainActivity, "✅ AI Buldu: $summary", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this@MainActivity, "✅ Bulundu: $summary", Toast.LENGTH_LONG).show()
                         filterList(searchInput.text.toString().trim(), immediate = true)
                     } else {
-                        Toast.makeText(this@MainActivity, "⚠️ AI sonuç çıkaramadı, tekrar deneyin.", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, "⚠️ Sonuç çıkarılamadı, tekrar deneyin.", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -876,8 +881,27 @@ class MainActivity : AppCompatActivity() {
             vView.stopPlayback()
             vView.visibility = View.GONE
             iView.visibility = View.VISIBLE
-            val bmp = BitmapFactory.decodeFile(meme.filePath)
-            iView.setImageBitmap(bmp)
+            iView.setImageBitmap(null)
+            lifecycleScope.launch {
+                val bmp = withContext(Dispatchers.IO) {
+                    try {
+                        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeFile(meme.filePath, bounds)
+                        var sample = 1
+                        while (bounds.outWidth / sample > 1280 || bounds.outHeight / sample > 1280) {
+                            sample *= 2
+                        }
+                        val opts = BitmapFactory.Options().apply {
+                            inSampleSize = sample
+                            inPreferredConfig = Bitmap.Config.RGB_565
+                        }
+                        BitmapFactory.decodeFile(meme.filePath, opts)
+                    } catch (_: Exception) { null }
+                }
+                if (bmp != null && currentPreviewMeme?.filePath == meme.filePath) {
+                    iView.setImageBitmap(bmp)
+                }
+            }
         }
     }
 

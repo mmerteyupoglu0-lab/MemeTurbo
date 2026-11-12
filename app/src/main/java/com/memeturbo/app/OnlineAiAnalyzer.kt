@@ -25,12 +25,11 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * Çoklu Ajan (Multi-Agent) Çevrimiçi Yapay Zeka Analiz Motoru:
- * - 1. Ajan (Ses & Şarkı Ajanı): Groq Whisper Large v3 Turbo ile müzikli/rap/akustik videoların
- *   sözlerini ve repliklerini yüksek doğrulukla Türkçe metne döker.
- * - 2. Ajan (Görsel, Karaoke Altyazı & Kara Mizah Ajanı): Llama 4 Scout Vision ile videodan alınan
- *   2x2 (4 kare) kolajdaki parça parça altyazıları birleştirir, yanlış ses kelimelerini düzeltir
- *   ve yazısız fotoğrafları/videoları Türkçe olarak betimler.
+ * V12.0 Çoklu Ajan (Multi-Agent) Çevrimiçi Yapay Zeka Analiz Motoru:
+ * - 1. Ajan (Ses & Şarkı Ajanı): Groq Whisper Large v3 Turbo + ADTS AAC Ses Sıkıştırma (~25 KB/video)
+ *   ve verbose_json no_speech_prob / müzik filtresi ile gerçek konuşmaları ve şarkı sözlerini çıkarır.
+ * - 2. Ajan (Görsel, Karaoke Altyazı & Kara Mizah Ajanı): Groq Qwen 3.8 27B Vision (qwen/qwen3.8-27b)
+ *   + dinamik aktif Vision model keşfi (/openai/v1/models) ile 2x2 kare kolajdaki altyazıları ve sahneyi okur.
  */
 object OnlineAiAnalyzer {
 
@@ -43,7 +42,10 @@ object OnlineAiAnalyzer {
     )
     private val xorMask = intArrayOf(0x5A, 0x3C, 0x71, 0x19, 0x8E, 0x43, 0x27, 0x6D)
 
-    private fun getApiKey(context: Context): String {
+    @Volatile
+    private var cachedVisionModels: List<String>? = null
+
+    fun getApiKey(context: Context): String {
         val prefs = context.getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
         val custom = prefs.getString("custom_groq_key", null)?.trim()
         if (!custom.isNullOrEmpty() && custom.length > 20) return custom
@@ -76,56 +78,103 @@ object OnlineAiAnalyzer {
     private val whisperHallucinations = listOf(
         "altyazı m.k", "altyazi m.k", "abone olmayı unutmayın", "izlediğiniz için teşekkürler",
         "teşekkür ederim", "kanalımıza abone", "beğenmeyi unutmayın", "www.", ".com",
-        "amara.org", "türkçe altyazı", "alttaki zil"
+        "amara.org", "türkçe altyazı", "alttaki zil", "müzik çalıyor", "alkışlar"
     )
+
+    private val musicOnlyOutputs = setOf(
+        "müzik", "muzik", "music", "[müzik]", "(müzik)", "♪", "♫",
+        "şarkı", "sarki", "müzik sesi", "fon müziği", "altyazı", "altyazi"
+    )
+
+    fun isMusicOrEmptyTranscript(raw: String): Boolean {
+        val clean = raw.replace("\u200B", "")
+            .trim()
+            .lowercase()
+            .trim('.', ',', '!', '?', '-', '_', '[', ']', '(', ')', '♪', '♫', ' ')
+        if (clean.isBlank()) return true
+        return clean in musicOnlyOutputs
+    }
 
     private fun cleanWhisperText(raw: String): String {
         val trimmed = raw.trim()
         if (trimmed.isBlank()) return ""
+        if (isMusicOrEmptyTranscript(trimmed)) return ""
         val lower = trimmed.lowercase()
         for (h in whisperHallucinations) {
-            if (lower.contains(h) && trimmed.length < 45) return ""
+            if (lower.contains(h) && trimmed.length < 48) return ""
         }
         return VideoIndexer.autoCorrectTurkishReplik(trimmed)
     }
 
     /**
-     * Videoyu hem Ses Ajanı (Whisper Large v3 Turbo) hem de Görsel/Altyazı Ajanı (Llama 4 Scout 2x2 Kolaj)
-     * ile analiz eder.
+     * Videoyu hem Ses Ajanı (Whisper Large v3 Turbo - sıkıştırılmış AAC veya hafif WAV)
+     * hem de Görsel/Altyazı Ajanı (Qwen 3.8 27B Vision 2x2 Kolaj) ile analiz eder.
+     * Ücretsiz TPM kotasını korumak için:
+     * - Eğer yerel OCR zaten net altyazı bulduysa ve Whisper da net replik bulduysa,
+     *   gereksiz Vision çağrısı yapmadan yerel OCR + Whisper'ı birleştirir.
+     * - Eğer konuşma zayıfsa/müzikse veya altyazı eksikse/kısa ise Vision ajanını çağırır.
      */
     suspend fun analyzeVideoWithAi(
         context: Context,
         videoFile: File,
-        indexer: VideoIndexer
+        indexer: VideoIndexer,
+        localOcrHint: String = "",
+        forceVision: Boolean = false
     ): AiMediaResult? = withContext(Dispatchers.IO) {
         if (!isOnline(context)) return@withContext null
         val apiKey = getApiKey(context)
 
-        // 1. Ajan: Videonun ilk 16 saniyelik 16kHz Mono sesini çıkar ve Whisper Large v3 Turbo'ya gönder
-        val pcm16k = indexer.extractPcm16kMonoForAi(videoFile, maxSeconds = 16)
+        // 1. Ajan: İlk 12 saniyeyi sıkıştırılmış AAC (~25 KB) olarak göndermeyi dene (%95 veri tasarrufu!)
         var whisperTranscript = ""
-        if (pcm16k.size > 6400) {
-            val wavBytes = pcm16kToWavBytes(pcm16k, 16000)
-            whisperTranscript = callGroqWhisper(apiKey, wavBytes)
+        val aacBytes = indexer.extractCompressedAacForAi(videoFile, maxSeconds = 12)
+        if (aacBytes.size > 1200) {
+            whisperTranscript = callGroqWhisper(apiKey, aacBytes, "audio.m4a", "audio/mp4")
+        } else {
+            val pcm16k = indexer.extractPcm16kMonoForAi(videoFile, maxSeconds = 12)
+            if (pcm16k.size > 6400) {
+                val wavBytes = pcm16kToWavBytes(pcm16k, 16000)
+                whisperTranscript = callGroqWhisper(apiKey, wavBytes, "audio.wav", "audio/wav")
+            }
         }
 
-        // 2. Ajan: Videodan 4 farklı saniyede (karaoke altyazıları ve sahneyi yakalamak için) 2x2 kolaj oluştur
+        val hasStrongSpeech = whisperTranscript.isNotBlank() &&
+            !isMusicOrEmptyTranscript(whisperTranscript) &&
+            !VideoIndexer.isWeakSpokenFiller(whisperTranscript)
+
+        val hasStrongLocalOcr = localOcrHint.length >= 10
+
+        // Kota Koruyucu Akıllı Karar:
+        // Hem konuşma çok netse hem de yerel OCR altyazıyı zaten okuduysa (ve tekil zorunlu AI çağrısı değilse),
+        // Vision kotasını (8K TPM) harcamadan ikisini birleştir!
+        if (!forceVision && hasStrongSpeech && hasStrongLocalOcr) {
+            return@withContext AiMediaResult(
+                spokenText = whisperTranscript,
+                screenText = localOcrHint,
+                visualLabels = "",
+                durationMs = 0L
+            )
+        }
+
+        // 2. Ajan: 4 farklı saniyeden 2x2 kare kolajı oluştur ve Qwen 3.8 27B Vision'a gönder
         val (durationMs, collageBase64) = buildVideoFourFrameCollageBase64(videoFile)
         var visionSpoken = ""
         var visionSubtitle = ""
         var visionScene = ""
 
-        if (collageBase64.isNotEmpty()) {
+        if (collageBase64.isNotEmpty() && (forceVision || !hasStrongSpeech || localOcrHint.isBlank())) {
             val prompt = buildString {
                 append("Bu görsel bir Türk meme veya müzik videosunun 4 farklı saniyesinden (sol üst, sağ üst, sol alt, sağ alt) alınmış 2x2 kare kolajıdır.\n")
                 if (whisperTranscript.isNotBlank()) {
                     append("Ses Ajanının duyduğu sözler: \"$whisperTranscript\"\n")
                 }
+                if (localOcrHint.isNotBlank()) {
+                    append("Ön OCR ipucu: \"$localOcrHint\"\n")
+                }
                 append("Görevlerin:\n")
                 append("1. Karelerin üzerindeki altyazıları veya sonradan eklenmiş ekran yazılarını (kelime kelime akan karaoke şarkı sözleri dahil; Instagram/TikTok sayfa adı veya TV logosu hariç) birleştirip tam Türkçe cümle olarak 'subtitle' alanına yaz.\n")
-                append("2. Ses Ajanının duyduğu sözlerde şarkı/müzik yüzünden yanlış anlaşılmış kelime varsa altyazıya ve Türkçe bağlama göre düzeltip en doğru repliği/şarkı sözünü 'spoken' alanına yaz.\n")
-                append("3. Görseldeki sahneyi, olayı veya kara mizahı Türkçe 3-6 kelimeyle 'scene' alanına yaz.\n")
-                append("SADECE geçerli bir JSON döndür, başka açıklama yazma:\n")
+                append("2. Ses Ajanının duyduğu sözlerde yanlış anlaşılmış kelime varsa altyazıya göre düzeltip en doğru repliği 'spoken' alanına yaz (sadece müzik varsa boş bırak).\n")
+                append("3. Görseldeki sahneyi, ünlü kişiyi (varsa), olayı veya mizahı Türkçe 3-6 kelimeyle 'scene' alanına yaz.\n")
+                append("SADECE geçerli bir JSON döndür, başka hiçbir açıklama veya düşünce yazma:\n")
                 append("{\"spoken\":\"...\",\"subtitle\":\"...\",\"scene\":\"...\"}")
             }
             val parsed = callGroqVisionJson(apiKey, collageBase64, prompt)
@@ -137,13 +186,18 @@ object OnlineAiAnalyzer {
         }
 
         val finalSpoken = when {
-            visionSpoken.isNotBlank() && !VideoIndexer.isWeakSpokenFiller(visionSpoken) ->
+            visionSpoken.isNotBlank() && !isMusicOrEmptyTranscript(visionSpoken) && !VideoIndexer.isWeakSpokenFiller(visionSpoken) ->
                 VideoIndexer.autoCorrectTurkishReplik(visionSpoken)
-            whisperTranscript.isNotBlank() -> whisperTranscript
+            hasStrongSpeech -> whisperTranscript
             else -> ""
         }
 
-        val finalScreen = visionSubtitle
+        val finalScreen = when {
+            visionSubtitle.length >= localOcrHint.length && visionSubtitle.isNotBlank() -> visionSubtitle
+            localOcrHint.isNotBlank() -> localOcrHint
+            else -> visionSubtitle
+        }
+
         val finalScene = if (visionScene.isNotBlank()) "🏷️ $visionScene" else ""
 
         if (finalSpoken.isBlank() && finalScreen.isBlank() && finalScene.isBlank()) {
@@ -159,42 +213,52 @@ object OnlineAiAnalyzer {
     }
 
     /**
-     * Fotoğrafı / Ekran görüntüsünü Görsel & Mizah Ajanı (Llama 4 Scout Vision) ile analiz eder.
-     * Hem içindeki tüm yazıları okur hem de fotoğrafın ne olduğunu Türkçe olarak açıklar ("🖼️ Görsel" kalmaz!).
+     * Fotoğrafı / Ekran görüntüsünü Görsel & Mizah Ajanı (Qwen 3.8 27B Vision) ile analiz eder.
+     * Hem içindeki tüm yazıları okur hem de fotoğrafın ne olduğunu Türkçe olarak açıklar.
      */
     suspend fun analyzeImageWithAi(
         context: Context,
-        imageFile: File
+        imageFile: File,
+        localOcrHint: String = ""
     ): AiMediaResult? = withContext(Dispatchers.IO) {
         if (!isOnline(context)) return@withContext null
         val apiKey = getApiKey(context)
 
-        val base64Jpeg = encodeImageFileToBase64Jpeg(imageFile, maxDim = 720)
+        val base64Jpeg = encodeImageFileToBase64Jpeg(imageFile, maxDim = 640)
         if (base64Jpeg.isEmpty()) return@withContext null
 
-        val prompt = """
-Bu fotoğrafı Türkçe galeri araması için analiz et:
-1. Fotoğrafın içinde anlamlı bir yazı, mesajlaşma, tweet, başlık veya altyazı varsa tam metnini 'subtitle' alanına yaz (filigran/sayfa adı hariç).
-2. Fotoğrafta ne göründüğünü, ortamı, kişileri, nesneleri veya mizahı (ör: 'konferans salonunda kalabalık', 'spor salonunda ayna özçekimi', 'çimlerde oturan arkadaş grubu', 'whatsapp görüntülü arama ekranı') 3-8 Türkçe kelimeyle 'scene' alanına yaz.
-SADECE geçerli bir JSON döndür:
-{"subtitle":"...","scene":"..."}
-        """.trimIndent()
+        val prompt = buildString {
+            append("Bu fotoğrafı Türkçe galeri araması için analiz et:\n")
+            if (localOcrHint.isNotBlank()) {
+                append("Görseldeki olası yazı ipucu: \"$localOcrHint\"\n")
+            }
+            append("1. Fotoğrafın içinde anlamlı bir yazı, mesajlaşma, tweet, başlık veya altyazı varsa düzgün Türkçe metnini 'subtitle' alanına yaz (filigran/sayfa adı hariç).\n")
+            append("2. Fotoğrafta ne göründüğünü, ortamı, kişileri, nesneleri veya mizahı (ör: 'tiyatro salonunda kalabalık grup fotoğrafı', 'parkta çimlerde oturan öğrenciler', 'whatsapp ders seçimi mesajlaşması', 'tarlada otlayan inekler') 3-8 Türkçe kelimeyle 'scene' alanına yaz.\n")
+            append("SADECE geçerli bir JSON döndür, başka açıklama yazma:\n")
+            append("{\"subtitle\":\"...\",\"scene\":\"...\"}")
+        }
 
         val parsed = callGroqVisionJson(apiKey, base64Jpeg, prompt) ?: return@withContext null
-        val subtitle = VideoIndexer.filterWatermarks(parsed.optString("subtitle", "").trim())
+        val aiSubtitle = VideoIndexer.filterWatermarks(parsed.optString("subtitle", "").trim())
         val scene = parsed.optString("scene", "").trim()
 
-        if (subtitle.isBlank() && scene.isBlank()) return@withContext null
+        val finalSubtitle = if (aiSubtitle.isNotBlank()) aiSubtitle else localOcrHint
+        if (finalSubtitle.isBlank() && scene.isBlank()) return@withContext null
 
         AiMediaResult(
             spokenText = "",
-            screenText = subtitle,
+            screenText = finalSubtitle,
             visualLabels = if (scene.isNotBlank()) "🖼️ $scene" else "",
             durationMs = 0L
         )
     }
 
-    private suspend fun callGroqWhisper(apiKey: String, wavBytes: ByteArray): String {
+    private suspend fun callGroqWhisper(
+        apiKey: String,
+        audioBytes: ByteArray,
+        fileName: String,
+        mimeType: String
+    ): String {
         val boundary = "----MemeTurboBoundary" + System.currentTimeMillis()
         for (attempt in 1..3) {
             var conn: HttpURLConnection? = null
@@ -219,14 +283,14 @@ SADECE geçerli bir JSON döndür:
 
                     writeField("model", "whisper-large-v3-turbo")
                     writeField("language", "tr")
-                    writeField("response_format", "json")
+                    writeField("response_format", "verbose_json")
                     writeField("temperature", "0.0")
-                    writeField("prompt", "Türkçe video repliği, şarkı sözleri, rap ve diyalog.")
+                    writeField("prompt", "Türkçe video repliği, diyalog ve konuşma.")
 
                     out.writeBytes("--$boundary\r\n")
-                    out.writeBytes("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n")
-                    out.writeBytes("Content-Type: audio/wav\r\n\r\n")
-                    out.write(wavBytes)
+                    out.writeBytes("Content-Disposition: form-data; name=\"file\"; filename=\"$fileName\"\r\n")
+                    out.writeBytes("Content-Type: $mimeType\r\n\r\n")
+                    out.write(audioBytes)
                     out.writeBytes("\r\n")
                     out.writeBytes("--$boundary--\r\n")
                     out.flush()
@@ -236,10 +300,29 @@ SADECE geçerli bir JSON döndür:
                 if (code == 200) {
                     val resp = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
                     val json = JSONObject(resp)
+
+                    // verbose_json segment analizi: Sadece yüksek olasılıkla gerçek konuşma olan segmentleri al!
+                    val segments = json.optJSONArray("segments")
+                    if (segments != null && segments.length() > 0) {
+                        val validParts = mutableListOf<String>()
+                        for (i in 0 until segments.length()) {
+                            val seg = segments.optJSONObject(i) ?: continue
+                            val noSpeechProb = seg.optDouble("no_speech_prob", 0.0)
+                            val segText = seg.optString("text", "").trim()
+                            // no_speech_prob > 0.78 ise ve tek kelimelik "Müzik" vb. ise atla
+                            if (noSpeechProb > 0.82 && segText.length < 15) continue
+                            if (!isMusicOrEmptyTranscript(segText)) {
+                                validParts.add(segText)
+                            }
+                        }
+                        val joined = validParts.joinToString(" ").trim()
+                        return cleanWhisperText(joined)
+                    }
+
                     return cleanWhisperText(json.optString("text", ""))
                 } else if (code == 429) {
-                    // Dakikalık ücretsiz kota dolduysa kısa süre bekle ve tekrar dene
-                    delay(2800L * attempt)
+                    val retrySec = conn.getHeaderField("retry-after")?.toLongOrNull() ?: (3L * attempt)
+                    delay((retrySec.coerceIn(2L, 12L)) * 1000L)
                 } else {
                     return ""
                 }
@@ -253,11 +336,58 @@ SADECE geçerli bir JSON döndür:
         return ""
     }
 
-    private suspend fun callGroqVisionJson(apiKey: String, base64Jpeg: String, prompt: String): JSONObject? {
-        val models = listOf(
+    private fun resolveActiveVisionModels(apiKey: String): List<String> {
+        cachedVisionModels?.let { if (it.isNotEmpty()) return it }
+
+        val defaultModels = mutableListOf(
+            "qwen/qwen3.8-27b",
             "meta-llama/llama-4-scout-17b-16e-instruct",
             "meta-llama/llama-4-maverick-17b-128e-instruct"
         )
+        var conn: HttpURLConnection? = null
+        try {
+            val url = URL("https://api.groq.com/openai/v1/models")
+            conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 8000
+                readTimeout = 8000
+                setRequestProperty("Authorization", "Bearer $apiKey")
+            }
+            if (conn.responseCode == 200) {
+                val resp = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                val data = JSONObject(resp).optJSONArray("data")
+                if (data != null) {
+                    val availableIds = mutableSetOf<String>()
+                    for (i in 0 until data.length()) {
+                        val id = data.optJSONObject(i)?.optString("id", "") ?: ""
+                        if (id.isNotBlank()) availableIds.add(id)
+                    }
+                    val prioritized = mutableListOf<String>()
+                    for (candidate in defaultModels) {
+                        if (candidate in availableIds) prioritized.add(candidate)
+                    }
+                    for (id in availableIds) {
+                        val low = id.lowercase()
+                        if ((low.contains("qwen") || low.contains("vision") || low.contains("scout") || low.contains("maverick") || low.contains("muse")) && id !in prioritized) {
+                            prioritized.add(id)
+                        }
+                    }
+                    if (prioritized.isNotEmpty()) {
+                        cachedVisionModels = prioritized
+                        return prioritized
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        } finally {
+            try { conn?.disconnect() } catch (_: Exception) {}
+        }
+        cachedVisionModels = defaultModels
+        return defaultModels
+    }
+
+    private suspend fun callGroqVisionJson(apiKey: String, base64Jpeg: String, prompt: String): JSONObject? {
+        val models = resolveActiveVisionModels(apiKey)
         for (modelName in models) {
             for (attempt in 1..2) {
                 var conn: HttpURLConnection? = null
@@ -267,7 +397,7 @@ SADECE geçerli bir JSON döndür:
                         requestMethod = "POST"
                         doOutput = true
                         connectTimeout = 15000
-                        readTimeout = 25000
+                        readTimeout = 28000
                         setRequestProperty("Authorization", "Bearer $apiKey")
                         setRequestProperty("Content-Type", "application/json; charset=UTF-8")
                     }
@@ -288,7 +418,10 @@ SADECE geçerli bir JSON döndür:
                     val bodyJson = JSONObject().apply {
                         put("model", modelName)
                         put("temperature", 0.1)
-                        put("max_tokens", 220)
+                        put("max_completion_tokens", 280)
+                        put("response_format", JSONObject().apply {
+                            put("type", "json_object")
+                        })
                         put("messages", JSONArray().apply {
                             put(JSONObject().apply {
                                 put("role", "user")
@@ -313,12 +446,14 @@ SADECE geçerli bir JSON döndür:
                         if (parsed != null) return parsed
                         break
                     } else if (code == 429) {
-                        delay(2600L * attempt)
+                        val retrySec = conn.getHeaderField("retry-after")?.toLongOrNull() ?: (4L * attempt)
+                        delay((retrySec.coerceIn(2L, 14L)) * 1000L)
                     } else {
+                        // Bu model desteklenmiyorsa (400/404) bir sonraki Vision modeline geç
                         break
                     }
                 } catch (_: Exception) {
-                    delay(800L)
+                    delay(900L)
                 } finally {
                     try { conn?.disconnect() } catch (_: Exception) {}
                 }
@@ -328,11 +463,13 @@ SADECE geçerli bir JSON döndür:
     }
 
     private fun extractJsonFromText(text: String): JSONObject? {
-        val start = text.indexOf('{')
-        val end = text.lastIndexOf('}')
+        // Qwen modelleri bazen <think>...</think> bloğu döndürebilir; önce onu temizle
+        val withoutThink = text.replace(Regex("<think>[\\s\\S]*?</think>", RegexOption.IGNORE_CASE), "").trim()
+        val start = withoutThink.indexOf('{')
+        val end = withoutThink.lastIndexOf('}')
         if (start >= 0 && end > start) {
             return try {
-                JSONObject(text.substring(start, end + 1))
+                JSONObject(withoutThink.substring(start, end + 1))
             } catch (_: Exception) {
                 null
             }
@@ -349,13 +486,15 @@ SADECE geçerli bir JSON döndür:
             durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
             val effectiveDurUs = ((durationMs.coerceIn(2000L, 14000L)) * 1000L)
             val timesUs = listOf(
-                (effectiveDurUs * 0.12).toLong(),
-                (effectiveDurUs * 0.36).toLong(),
-                (effectiveDurUs * 0.62).toLong(),
+                (effectiveDurUs * 0.14).toLong(),
+                (effectiveDurUs * 0.38).toLong(),
+                (effectiveDurUs * 0.64).toLong(),
                 (effectiveDurUs * 0.86).toLong()
             )
             for (t in timesUs) {
-                val bmp = retriever.getFrameAtTime(t, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                // OPTION_CLOSEST ile tam o saniyedeki altyazı karesini yakala (boş ise CLOSEST_SYNC yedek)
+                val bmp = retriever.getFrameAtTime(t, MediaMetadataRetriever.OPTION_CLOSEST)
+                    ?: retriever.getFrameAtTime(t, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 if (bmp != null) frames.add(bmp)
             }
         } catch (_: Exception) {
@@ -365,8 +504,8 @@ SADECE geçerli bir JSON döndür:
 
         if (frames.isEmpty()) return Pair(durationMs, "")
 
-        val cellW = 320
-        val cellH = 320
+        val cellW = 280
+        val cellH = 280
         val collage = Bitmap.createBitmap(cellW * 2, cellH * 2, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(collage)
         canvas.drawColor(Color.BLACK)
@@ -383,13 +522,13 @@ SADECE geçerli bir JSON döndür:
         }
 
         val out = ByteArrayOutputStream()
-        collage.compress(Bitmap.CompressFormat.JPEG, 74, out)
+        collage.compress(Bitmap.CompressFormat.JPEG, 72, out)
         collage.recycle()
         val b64 = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
         return Pair(durationMs, b64)
     }
 
-    private fun encodeImageFileToBase64Jpeg(imageFile: File, maxDim: Int = 720): String {
+    private fun encodeImageFileToBase64Jpeg(imageFile: File, maxDim: Int = 640): String {
         return try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(imageFile.absolutePath, bounds)
@@ -416,7 +555,7 @@ SADECE geçerli bir JSON döndür:
                 raw
             }
             val out = ByteArrayOutputStream()
-            finalBmp.compress(Bitmap.CompressFormat.JPEG, 76, out)
+            finalBmp.compress(Bitmap.CompressFormat.JPEG, 74, out)
             finalBmp.recycle()
             Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
         } catch (_: Exception) {
@@ -433,13 +572,13 @@ SADECE geçerli bir JSON döndür:
         header.putInt(totalDataLen)
         header.put("WAVE".toByteArray(Charsets.US_ASCII))
         header.put("fmt ".toByteArray(Charsets.US_ASCII))
-        header.putInt(16) // PCM chunk size
-        header.putShort(1) // AudioFormat = 1 (PCM)
-        header.putShort(1) // NumChannels = 1 (Mono)
+        header.putInt(16)
+        header.putShort(1)
+        header.putShort(1)
         header.putInt(sampleRate)
         header.putInt(byteRate)
-        header.putShort(2) // BlockAlign
-        header.putShort(16) // BitsPerSample
+        header.putShort(2)
+        header.putShort(16)
         header.put("data".toByteArray(Charsets.US_ASCII))
         header.putInt(pcmData.size)
 

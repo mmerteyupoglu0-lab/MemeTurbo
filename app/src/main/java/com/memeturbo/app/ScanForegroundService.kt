@@ -12,9 +12,6 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
-import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.vosk.Model
 import java.io.File
@@ -112,7 +109,7 @@ class ScanForegroundService : Service() {
                 wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MemeTurbo::ScanWakeLock")
             }
             if (wakeLock?.isHeld == false) {
-                wakeLock?.acquire(120 * 60 * 1000L) // Maksimum 2 saat güvenli kilit
+                wakeLock?.acquire(120 * 60 * 1000L)
             }
         } catch (_: Exception) {}
     }
@@ -163,14 +160,15 @@ class ScanForegroundService : Service() {
                     return@launch
                 }
 
-                // AŞAMA 1: ANINDA ÖN-İNDEKSLEME (Tüm videolar 2 saniyede galeride görünür ve dosya adından aranabilir!)
+                // AŞAMA 1: TEK İŞLEMDE (BATCH) ANINDA ÖN-İNDEKSLEME (Sıfır kilitlenme!)
                 stateFlow.value = stateFlow.value.copy(
                     statusMessage = "⚡ $total medya hızlı listeye ekleniyor..."
                 )
+                val preIndexedBatch = ArrayList<MemeVideo>(newItems.size)
                 for (item in newItems) {
                     val f = File(item.path)
                     if (f.exists()) {
-                        db.insertMeme(
+                        preIndexedBatch.add(
                             MemeVideo(
                                 filePath = f.absolutePath,
                                 fileName = f.nameWithoutExtension,
@@ -185,10 +183,13 @@ class ScanForegroundService : Service() {
                         )
                     }
                 }
+                if (preIndexedBatch.isNotEmpty()) {
+                    db.insertMemesBatch(preIndexedBatch)
+                }
                 stateFlow.value = stateFlow.value.copy(refreshTick = stateFlow.value.refreshTick + 1)
 
-                // AŞAMA 2: PARALEL SES + ALTYAZI MOTORU İLE TURBO ANALİZ
-                val model = ensureVoskModel(indexer)
+                // AŞAMA 2: HİBRİT (ÇEVRİMİÇİ AI + YEREL ALTYAZI OCR) TURBO ANALİZ
+                val model = if (!OnlineAiAnalyzer.isOnline(this@ScanForegroundService)) ensureVoskModel(indexer) else voskModel
 
                 newItems.forEachIndexed { index, item ->
                     if (isStoppedFlag) return@forEachIndexed
@@ -204,7 +205,7 @@ class ScanForegroundService : Service() {
                         total = total,
                         statusMessage = msg
                     )
-                    if (curNum == 1 || curNum % 5 == 0) {
+                    if (curNum == 1 || curNum % 6 == 0) {
                         updateNotification(msg)
                     }
 
@@ -222,16 +223,17 @@ class ScanForegroundService : Service() {
                         }
                     }
 
-                    if (curNum % 12 == 0) {
+                    // Arayüzü yormamak için her 24 öğede bir hafif güncelleme
+                    if (curNum % 24 == 0) {
                         stateFlow.value = stateFlow.value.copy(refreshTick = stateFlow.value.refreshTick + 1)
                     }
-                    delay(10)
+                    delay(20)
                 }
 
                 val totalDb = db.getCount()
                 stateFlow.value = ScanState(
                     isRunning = false,
-                    statusMessage = "✅ $total medya Turbo hızla tamamlandı! (Toplam: $totalDb)",
+                    statusMessage = "✅ $total medya tamamlandı! (Toplam: $totalDb)",
                     refreshTick = stateFlow.value.refreshTick + 1
                 )
             } catch (_: CancellationException) {
@@ -266,8 +268,10 @@ class ScanForegroundService : Service() {
                 }
 
                 // Elle (✏️) düzenlediklerine ASLA dokunma!
-                // forceFullAlbum == false ise sadece zayıf ("bilmiyorum/biliyorum/bu/ne/hayır") veya bomboş ("🖼️ Görsel" / "🎬 Video") olanları seç;
-                // içinde tek kelime bile olsa anlamlı söz olanlara ("İstesende" vb.) kesinlikle dokunma!
+                // forceFullAlbum == false ise:
+                // - Sadece "Müzik" veya zayıf dolgu kelimesi olan videoları,
+                // - Altyazısı (screenText) boş kalmış videoları,
+                // - Ve çevrimiçi AI sahne betimlemesi (🖼️ ...) almamış fotoğrafları seç!
                 val targetItems = allItems.filter { item ->
                     if (item.filePath in editedPaths) return@filter false
                     if (forceFullAlbum) return@filter true
@@ -277,11 +281,15 @@ class ScanForegroundService : Service() {
                     val visual = VideoIndexer.cleanVisualLabelsString(item.visualLabels)
 
                     if (item.isVideo) {
-                        val hasGoodSpeech = spoken.isNotBlank() && !VideoIndexer.isWeakSpokenFiller(spoken)
+                        val hasGoodSpeech = spoken.isNotBlank() &&
+                            !OnlineAiAnalyzer.isMusicOrEmptyTranscript(spoken) &&
+                            !VideoIndexer.isWeakSpokenFiller(spoken)
                         val hasGoodScreen = screen.length >= 6
-                        !hasGoodSpeech && !hasGoodScreen
+                        // Eğer konuşma zayıfsa/müzikse VEYA altyazı hiç okunmamışsa düzeltmeye al!
+                        !hasGoodSpeech || !hasGoodScreen
                     } else {
-                        screen.isBlank() && visual.isBlank()
+                        val hasAiPhotoScene = visual.startsWith("🖼️")
+                        screen.isBlank() && !hasAiPhotoScene
                     }
                 }
 
@@ -290,7 +298,7 @@ class ScanForegroundService : Service() {
                 if (total == 0) {
                     stateFlow.value = ScanState(
                         isRunning = false,
-                        statusMessage = "✅ Seçili albümde eksik veya bozuk medya kalmadı!",
+                        statusMessage = "✅ Seçili albümde eksik veya altyazısız medya kalmadı!",
                         refreshTick = stateFlow.value.refreshTick + 1
                     )
                     return@launch
@@ -304,7 +312,7 @@ class ScanForegroundService : Service() {
                     val file = File(item.filePath)
                     val curNum = idx + 1
                     val shortName = VideoIndexer.cleanFileNameForDisplay(item.fileName).ifEmpty { item.fileName.take(20) }
-                    val modeTag = if (OnlineAiAnalyzer.isOnline(this@ScanForegroundService)) "🌐 AI Ajan" else "🔧 Çevrimdışı"
+                    val modeTag = if (OnlineAiAnalyzer.isOnline(this@ScanForegroundService)) "🌐 AI+OCR" else "🔧 Çevrimdışı"
                     val msg = "$modeTag ($curNum/$total): $shortName"
 
                     stateFlow.value = stateFlow.value.copy(
@@ -313,25 +321,45 @@ class ScanForegroundService : Service() {
                         total = total,
                         statusMessage = msg
                     )
-                    if (curNum == 1 || curNum % 4 == 0) {
+                    if (curNum == 1 || curNum % 5 == 0) {
                         updateNotification(msg)
                     }
 
                     if (file.exists()) {
                         try {
-                            val fresh = if (item.isVideo) {
+                            val oldSpoken = item.spokenText.replace("\u200B", "").trim()
+                            val oldHasGoodSpeech = oldSpoken.isNotBlank() &&
+                                !OnlineAiAnalyzer.isMusicOrEmptyTranscript(oldSpoken) &&
+                                !VideoIndexer.isWeakSpokenFiller(oldSpoken)
+
+                            // HIZ & VERİ TASARRUFU:
+                            // Eğer videonun konuşması (Whisper) zaten %85 doğruysa ve sadece altyazısı eksikse,
+                            // sesi tekrar internetten yükleme! Sadece yerel 3-kare Altyazı OCR + (gerekirse) Vision çalıştır!
+                            val fresh = if (item.isVideo && oldHasGoodSpeech && !forceFullAlbum) {
+                                val (dur, localOcr, localScene) = indexer.extractLocalVideoOcrAndScene(file)
+                                MemeVideo(
+                                    filePath = item.filePath,
+                                    fileName = item.fileName,
+                                    durationMs = if (item.durationMs > 0L) item.durationMs else dur,
+                                    spokenText = oldSpoken,
+                                    screenText = localOcr,
+                                    visualLabels = localScene.ifBlank { item.visualLabels },
+                                    isVideo = true,
+                                    lastModified = item.lastModified,
+                                    albumName = item.albumName
+                                )
+                            } else if (item.isVideo) {
                                 indexer.extractVideoData(file, model, item.albumName)
                             } else {
                                 indexer.extractImageData(file, item.albumName)
                             }
 
-                            val oldSpoken = item.spokenText.replace("\u200B", "").trim()
                             val newSpoken = fresh.spokenText.replace("\u200B", "").trim()
                             val finalSpoken = when {
-                                !VideoIndexer.isWeakSpokenFiller(newSpoken) -> newSpoken
-                                !VideoIndexer.isWeakSpokenFiller(oldSpoken) -> oldSpoken
-                                newSpoken.isNotBlank() -> newSpoken
-                                oldSpoken.isNotBlank() -> oldSpoken
+                                !OnlineAiAnalyzer.isMusicOrEmptyTranscript(newSpoken) && !VideoIndexer.isWeakSpokenFiller(newSpoken) -> newSpoken
+                                oldHasGoodSpeech -> oldSpoken
+                                !OnlineAiAnalyzer.isMusicOrEmptyTranscript(newSpoken) && newSpoken.isNotBlank() -> newSpoken
+                                !OnlineAiAnalyzer.isMusicOrEmptyTranscript(oldSpoken) && oldSpoken.isNotBlank() -> oldSpoken
                                 else -> ""
                             }
 
@@ -351,15 +379,15 @@ class ScanForegroundService : Service() {
                         }
                     }
 
-                    if (curNum % 8 == 0) {
+                    if (curNum % 20 == 0) {
                         stateFlow.value = stateFlow.value.copy(refreshTick = stateFlow.value.refreshTick + 1)
                     }
-                    delay(20)
+                    delay(25)
                 }
 
                 stateFlow.value = ScanState(
                     isRunning = false,
-                    statusMessage = "✅ $total medya AI ile başarıyla çözümlendi!",
+                    statusMessage = "✅ $total medya AI + Altyazı OCR ile güncellendi!",
                     refreshTick = stateFlow.value.refreshTick + 1
                 )
             } catch (_: CancellationException) {

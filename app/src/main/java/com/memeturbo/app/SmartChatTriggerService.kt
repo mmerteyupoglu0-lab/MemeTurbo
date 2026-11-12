@@ -44,7 +44,9 @@ class SmartChatTriggerService : AccessibilityService() {
         "com.whatsapp.w4b",
         "org.telegram.messenger",
         "com.discord",
-        "com.facebook.orca"
+        "com.facebook.orca",
+        "com.twitter.android",
+        "com.zhiliaoapp.musically"
     )
 
     override fun onServiceConnected() {
@@ -61,14 +63,18 @@ class SmartChatTriggerService : AccessibilityService() {
 
         currentChatPackage = pkg
 
-        if (event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+        val type = event.eventType
+        if (type == AccessibilityEvent.TYPE_VIEW_CLICKED || type == AccessibilityEvent.TYPE_VIEW_FOCUSED) {
             val source = event.source
-            val isInput = source?.isEditable == true || 
-                          event.className?.toString()?.contains("EditText", ignoreCase = true) == true
+            val clsName = event.className?.toString() ?: ""
+            val isInput = source?.isEditable == true ||
+                clsName.contains("EditText", ignoreCase = true) ||
+                clsName.contains("AutoComplete", ignoreCase = true)
 
             if (isInput) {
                 val now = System.currentTimeMillis()
-                if (now - lastClickTime in 60..750) {
+                // İlk odaklanma veya tıklamadan sonra 850ms içinde ikinci tıklama gelirse paneli aç!
+                if (type == AccessibilityEvent.TYPE_VIEW_CLICKED && now - lastClickTime in 50..850) {
                     showGameTurboSearchPanel()
                     lastClickTime = 0L
                 } else {
@@ -122,7 +128,6 @@ class SmartChatTriggerService : AccessibilityService() {
             }
         }
 
-        // Üst Bar: [📁 Albüm ▾] + Arama Kutusu + Kapatma (✕)
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -173,7 +178,6 @@ class SmartChatTriggerService : AccessibilityService() {
         topBar.addView(closeBtn)
         container.addView(topBar)
 
-        // Açılır Albüm Seçim Listesi (Panel içi, çökmesiz ve koyu temalı)
         val albumDropdownScroll = ScrollView(this).apply {
             visibility = View.GONE
             background = GradientDrawable().apply {
@@ -220,6 +224,7 @@ class SmartChatTriggerService : AccessibilityService() {
         val recyclerView = RecyclerView(this).apply {
             layoutManager = gridLayoutManager
             setHasFixedSize(true)
+            itemAnimator = null
             setItemViewCacheSize(24)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -254,14 +259,13 @@ class SmartChatTriggerService : AccessibilityService() {
 
         val db = MemeDatabase.getInstance(this).memeDao()
 
-        var overlayCachedMemes: List<MemeVideo>? = null
         var searchJob: Job? = null
         fun refreshOverlayList(query: String, immediate: Boolean = false) {
             searchJob?.cancel()
             searchJob = serviceScope.launch {
-                if (!immediate && query.isNotEmpty()) delay(80)
-                val results = withContext(Dispatchers.Default) {
-                    val all = overlayCachedMemes ?: db.getAllMemes().also { overlayCachedMemes = it }
+                if (!immediate && query.isNotEmpty()) delay(60)
+                val results = withContext(Dispatchers.IO) {
+                    val all = db.getAllMemes()
                     val albumFiltered = if (selectedOverlayAlbum == null) {
                         all
                     } else {
@@ -273,17 +277,17 @@ class SmartChatTriggerService : AccessibilityService() {
                         VideoIndexer.smartSearchFilter(albumFiltered, query)
                     }
                 }
-                adapter.submitList(results)
-                if (query.isNotEmpty()) {
-                    recyclerView.scrollToPosition(0)
-                }
-                if (query.isEmpty() && overlaySavedScrollPos > 0) {
-                    isOverlayRestoringScroll = true
-                    val targetPos = overlaySavedScrollPos
-                    val targetOffset = overlaySavedScrollOffset
-                    recyclerView.post {
-                        gridLayoutManager.scrollToPositionWithOffset(targetPos, targetOffset)
-                        recyclerView.post { isOverlayRestoringScroll = false }
+                adapter.submitList(results) {
+                    if (query.isNotEmpty()) {
+                        recyclerView.scrollToPosition(0)
+                    } else if (overlaySavedScrollPos > 0) {
+                        isOverlayRestoringScroll = true
+                        val targetPos = overlaySavedScrollPos
+                        val targetOffset = overlaySavedScrollOffset
+                        recyclerView.post {
+                            gridLayoutManager.scrollToPositionWithOffset(targetPos, targetOffset)
+                            recyclerView.post { isOverlayRestoringScroll = false }
+                        }
                     }
                 }
             }
@@ -294,7 +298,7 @@ class SmartChatTriggerService : AccessibilityService() {
                 albumDropdownScroll.visibility = View.GONE
             } else {
                 serviceScope.launch {
-                    val albums = db.getIndexedAlbumNames()
+                    val albums = withContext(Dispatchers.IO) { db.getIndexedAlbumNames() }
                     albumDropdownList.removeAllViews()
 
                     fun addAlbumOption(label: String, albumValue: String?) {
@@ -313,7 +317,7 @@ class SmartChatTriggerService : AccessibilityService() {
                                 albumDropdownScroll.visibility = View.GONE
                                 overlaySavedScrollPos = 0
                                 overlaySavedScrollOffset = 0
-                                refreshOverlayList(searchInput.text?.toString()?.trim() ?: "")
+                                refreshOverlayList(searchInput.text?.toString()?.trim() ?: "", immediate = true)
                             }
                         }
                         albumDropdownList.addView(row)
@@ -356,16 +360,6 @@ class SmartChatTriggerService : AccessibilityService() {
         searchPanelView = container
         windowManager.addView(container, params)
         searchInput.requestFocus()
-    }
-
-    private fun normalizeText(text: String): String {
-        return text.lowercase()
-            .replace('ı', 'i')
-            .replace('ğ', 'g')
-            .replace('ü', 'u')
-            .replace('ş', 's')
-            .replace('ö', 'o')
-            .replace('ç', 'c')
     }
 
     private fun closeSearchPanel() {

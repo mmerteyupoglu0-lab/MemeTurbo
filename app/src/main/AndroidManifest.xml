@@ -14,6 +14,7 @@
 
     <application
         android:allowBackup="true"
+        android:largeHeap="true"
         android:label="MemeTurbo"
         android:icon="@drawable/ic_launcher_foreground"
         android:roundIcon="@drawable/ic_launcher_foreground"
@@ -42,6 +43,7 @@
 
         <service
             android:name=".SmartChatTriggerService"
+            android:process=":overlay"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="false">
             <intent-filter>

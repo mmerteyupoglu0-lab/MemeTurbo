@@ -51,6 +51,9 @@ interface MemeDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMeme(meme: MemeVideo)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertMemesBatch(memes: List<MemeVideo>)
+
     @Update
     suspend fun updateMeme(meme: MemeVideo)
 
@@ -96,6 +99,7 @@ abstract class MemeDatabase : RoomDatabase() {
             }
         }
 
+        @OptIn(ExperimentalRoomApi::class)
         fun getInstance(context: Context): MemeDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -103,6 +107,8 @@ abstract class MemeDatabase : RoomDatabase() {
                     MemeDatabase::class.java,
                     "memeturbo_db"
                 )
+                    .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
+                    .enableMultiInstanceInvalidation()
                     .addMigrations(MIGRATION_2_3)
                     .fallbackToDestructiveMigration()
                     .build()
