@@ -273,10 +273,9 @@ class SmartChatTriggerService : AccessibilityService() {
                         VideoIndexer.smartSearchFilter(albumFiltered, query)
                     }
                 }
-                adapter.submitList(results) {
-                    if (query.isNotEmpty()) {
-                        recyclerView.scrollToPosition(0)
-                    }
+                adapter.submitList(results)
+                if (query.isNotEmpty()) {
+                    recyclerView.scrollToPosition(0)
                 }
                 if (query.isEmpty() && overlaySavedScrollPos > 0) {
                     isOverlayRestoringScroll = true

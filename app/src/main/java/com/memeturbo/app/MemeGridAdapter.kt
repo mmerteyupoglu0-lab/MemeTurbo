@@ -37,10 +37,11 @@ class MemeGridAdapter(
         }
     }
 
-    fun submitList(newItems: List<MemeVideo>) {
+    fun submitList(newItems: List<MemeVideo>, onCommitted: (() -> Unit)? = null) {
         items.clear()
         items.addAll(newItems)
         notifyDataSetChanged()
+        onCommitted?.invoke()
     }
 
     private fun dpToPx(view: View, dp: Float): Int {

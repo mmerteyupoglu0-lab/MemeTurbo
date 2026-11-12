@@ -551,11 +551,10 @@ class MainActivity : AppCompatActivity() {
                 Pair(finalItems, albumFiltered.size)
             }
 
-            adapter.submitList(resultPair.first) {
-                if (query.isNotEmpty()) {
-                    // Yazarken arama tuşuna basmadan en alakalı örnek videoları anında en üstte göster!
-                    galleryRecycler.scrollToPosition(0)
-                }
+            adapter.submitList(resultPair.first)
+            if (query.isNotEmpty()) {
+                // Yazarken arama tuşuna basmadan en alakalı örnek videoları anında en üstte göster!
+                galleryRecycler.scrollToPosition(0)
             }
 
             if (!ScanForegroundService.stateFlow.value.isRunning && selectedAlbumFilter != null && query.isEmpty()) {
