@@ -5,7 +5,6 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.AudioFormat
 import android.media.MediaCodec
-import android.media.MediaCodecInfo
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
@@ -78,7 +77,8 @@ class VideoIndexer(private val context: Context) {
             Regex("\\b(elma mıyım|elmamıyım|elma miyim)\\s+(konuşcam|konuşacağım|konuscam)", RegexOption.IGNORE_CASE) to "elma mıyım konuşcam",
             Regex("\\b(pişman mıyım|pisman miyim)\\s+(yoo|yo|yok)", RegexOption.IGNORE_CASE) to "pişman mıyım yoo",
             Regex("\\b(kilo kedi|kilo verdi)\\b", RegexOption.IGNORE_CASE) to "kilo verdi",
-            Regex("\\b(bağ-kur lu|bağkurlu)\\b", RegexOption.IGNORE_CASE) to "bağırıyor"
+            Regex("\\b(bağ-kur lu|bağkurlu)\\b", RegexOption.IGNORE_CASE) to "bağırıyor",
+            Regex("\\btahvim", RegexOption.IGNORE_CASE) to "takvim"
         )
 
         fun autoCorrectTurkishReplik(rawSpoken: String): String {
@@ -96,13 +96,15 @@ class VideoIndexer(private val context: Context) {
             "b", "d", "o", "e", "i", "mu", "mü", "mi", "mı", "ve", "de", "da", "ki", "bi", "bir",
             "ama", "çok", "yok", "var", "hayır", "hayir", "evet", "tamam", "geciyor", "geçiyor",
             "niçin", "nicin", "sadece", "değil", "degil", "ürünleri", "urunleri", "bana", "bunu",
-            "müzik", "muzik", "music", "şarkı", "sarki", "altyazı", "altyazi", "alkış"
+            "müzik", "muzik", "music", "şarkı", "sarki", "altyazı", "altyazi", "alkış",
+            "hemen", "sanırım", "diyalog", "türen", "braten", "video", "görsel"
         )
 
         private val weakMultiWordPhrases = setOf(
             "biliyorum ne bilmiyorum", "biliyorum biz", "biliyorum anna", "biliyorum love",
             "biliyorum anlıyorum", "biliyorum anliyorum", "ne bilmiyorum", "iyi ürün", "mi ürün",
-            "müzik çalıyor", "muzik caliyor", "fon müziği"
+            "müzik çalıyor", "muzik caliyor", "fon müziği",
+            "şarkı sözleri, rap ve diyalog", "şarkı sözleri, rap ve diyalog."
         )
 
         fun isWeakSpokenFiller(spoken: String): Boolean {
@@ -112,6 +114,7 @@ class VideoIndexer(private val context: Context) {
                 .trim('.', ',', '!', '?', '-', '_', '[', ']', '(', ')', '♪', '♫', ' ')
             if (clean.isBlank()) return true
             if (clean in weakMultiWordPhrases) return true
+            if (clean.contains("şarkı sözleri") && clean.contains("diyalog")) return true
             val words = clean.split(Regex("\\s+")).filter { it.isNotBlank() }
             if (words.isEmpty()) return true
             if (words.size == 1) {
@@ -132,7 +135,6 @@ class VideoIndexer(private val context: Context) {
             val cleanVisual = cleanVisualLabelsString(meme.visualLabels)
             val weakSpoken = isWeakSpokenFiller(cleanSpoken)
 
-            // Hem güçlü konuşma hem de altyazı varsa ikisini de göster veya en dolgun olanı öne çıkar
             val snippet = when {
                 cleanSpoken.isNotBlank() && !weakSpoken && cleanScreen.isNotBlank() && !cleanSpoken.equals(cleanScreen, ignoreCase = true) ->
                     "🗣️ $cleanSpoken • 📝 $cleanScreen"
@@ -148,11 +150,38 @@ class VideoIndexer(private val context: Context) {
             return snippet
         }
 
+        private fun isOneEditAway(a: String, b: String): Boolean {
+            if (abs(a.length - b.length) > 1) return false
+            if (a == b) return true
+            var i = 0
+            var j = 0
+            var diffs = 0
+            while (i < a.length && j < b.length) {
+                if (a[i] == b[j]) {
+                    i++
+                    j++
+                } else {
+                    diffs++
+                    if (diffs > 1) return false
+                    if (a.length > b.length) i++
+                    else if (b.length > a.length) j++
+                    else { i++; j++ }
+                }
+            }
+            if (i < a.length || j < b.length) diffs++
+            return diffs <= 1
+        }
+
+        /**
+         * V13.0 Yazım Hatası + Birleşik/Ayrı ("istesende" <-> "istesen de", "burda" <-> "burada")
+         * Toleranslı Akıllı Arama Motoru
+         */
         fun smartSearchFilter(items: List<MemeVideo>, query: String): List<MemeVideo> {
             val normQ = normalizeTr(query.trim())
             if (normQ.isEmpty()) return items
             val words = normQ.split(Regex("\\s+")).filter { it.isNotBlank() }
             if (words.isEmpty()) return items
+            val spacelessQ = normQ.replace(Regex("[^a-z0-9]"), "")
 
             val strongMatches = ArrayList<Pair<MemeVideo, Int>>(32)
             val fallbackMatches = ArrayList<Pair<MemeVideo, Int>>(32)
@@ -167,6 +196,14 @@ class VideoIndexer(private val context: Context) {
                 }
 
                 if (blob.isBlank()) continue
+                val spacelessBlob = blob.replace(Regex("[^a-z0-9]"), "")
+
+                // 1. Birleşik / ayrı yazım kontrolü ("istesende" <-> "istesen de", "yazicamda" <-> "yazicam da")
+                if (spacelessQ.length >= 5 && spacelessBlob.contains(spacelessQ)) {
+                    val exactBonus = if (blob.contains(normQ)) 120 else 60
+                    strongMatches.add(item to (220 + exactBonus))
+                    continue
+                }
 
                 if (words.size == 1) {
                     val w = words[0]
@@ -177,7 +214,12 @@ class VideoIndexer(private val context: Context) {
                     } else if (w.length >= 4) {
                         val stem = w.substring(0, w.length - 1)
                         if (blob.contains(stem)) {
-                            fallbackMatches.add(item to 45)
+                            fallbackMatches.add(item to 55)
+                        } else {
+                            val blobWords = blob.split(Regex("[^a-z0-9]+"))
+                            if (blobWords.any { bw -> bw.length >= 4 && isOneEditAway(w, bw) }) {
+                                fallbackMatches.add(item to 50)
+                            }
                         }
                     }
                 } else {
@@ -186,27 +228,32 @@ class VideoIndexer(private val context: Context) {
                     }.ifEmpty { words }
 
                     var exactOrPrefixMatched = 0
-                    var stemMatched = 0
+                    var fuzzyMatched = 0
+                    var blobWordsCache: List<String>? = null
+
                     for ((idx, w) in meaningfulWords.withIndex()) {
                         if (blob.contains(w)) {
                             exactOrPrefixMatched++
+                        } else if (w.length >= 4) {
+                            val bWords = blobWordsCache ?: blob.split(Regex("[^a-z0-9]+")).also { blobWordsCache = it }
+                            val stem = w.substring(0, minOf(w.length - 1, 5))
+                            if (bWords.any { bw -> bw.startsWith(stem) || (bw.length >= 4 && isOneEditAway(w, bw)) }) {
+                                fuzzyMatched++
+                            }
                         } else if (idx == meaningfulWords.lastIndex && w.length >= 2 && blob.contains(w)) {
                             exactOrPrefixMatched++
-                        } else if (w.length >= 4) {
-                            val stem = w.substring(0, minOf(w.length - 1, 5))
-                            if (blob.contains(stem)) stemMatched++
                         }
                     }
 
                     if (exactOrPrefixMatched == meaningfulWords.size) {
                         val phraseBonus = if (blob.contains(normQ)) 100 else 0
                         strongMatches.add(item to (200 + phraseBonus))
-                    } else if (exactOrPrefixMatched + stemMatched == meaningfulWords.size && exactOrPrefixMatched > 0) {
-                        strongMatches.add(item to (130 + exactOrPrefixMatched * 20))
-                    } else if (exactOrPrefixMatched > 0) {
-                        val longWordMatched = meaningfulWords.any { it.length >= 3 && blob.contains(it) }
-                        if (longWordMatched) {
-                            val score = exactOrPrefixMatched * 30 + stemMatched * 10
+                    } else if (exactOrPrefixMatched + fuzzyMatched == meaningfulWords.size && (exactOrPrefixMatched > 0 || fuzzyMatched >= 2)) {
+                        strongMatches.add(item to (140 + exactOrPrefixMatched * 20 + fuzzyMatched * 10))
+                    } else if (exactOrPrefixMatched > 0 || fuzzyMatched > 0) {
+                        val longWordMatched = meaningfulWords.any { it.length >= 3 && (blob.contains(it)) }
+                        if (longWordMatched || fuzzyMatched > 0) {
+                            val score = exactOrPrefixMatched * 30 + fuzzyMatched * 15
                             fallbackMatches.add(item to score)
                         }
                     }
@@ -233,13 +280,13 @@ class VideoIndexer(private val context: Context) {
         private val spamAndWatermarkPatterns = listOf(
             Regex("@[a-zA-Z0-9._]+", RegexOption.IGNORE_CASE),
             Regex("[0-9]*galerim[a-zA-Z0-9._]*", RegexOption.IGNORE_CASE),
+            Regex(".*galeriko.*", RegexOption.IGNORE_CASE),
             Regex(".*rraene.*", RegexOption.IGNORE_CASE),
             Regex(".*humor.*", RegexOption.IGNORE_CASE),
             Regex(".*mizah.*", RegexOption.IGNORE_CASE),
             Regex(".*tv.*anime.*", RegexOption.IGNORE_CASE),
             Regex(".*instagram.*", RegexOption.IGNORE_CASE),
             Regex(".*tiktok.*", RegexOption.IGNORE_CASE),
-            Regex(".*post.*", RegexOption.IGNORE_CASE),
             Regex(".*sayfa.*", RegexOption.IGNORE_CASE),
             Regex(".*arsiv.*", RegexOption.IGNORE_CASE),
             Regex(".*arşiv.*", RegexOption.IGNORE_CASE),
@@ -256,6 +303,19 @@ class VideoIndexer(private val context: Context) {
             Regex(".*toosted.*", RegexOption.IGNORE_CASE),
             Regex(".*ataner.*", RegexOption.IGNORE_CASE),
             Regex(".*odunyanin.*", RegexOption.IGNORE_CASE),
+            Regex(".*damladila.*", RegexOption.IGNORE_CASE),
+            Regex(".*koftilenk.*", RegexOption.IGNORE_CASE),
+            Regex(".*yourmood.*", RegexOption.IGNORE_CASE),
+            Regex(".*enesyildiz.*", RegexOption.IGNORE_CASE),
+            Regex(".*mrzaersa.*", RegexOption.IGNORE_CASE),
+            Regex(".*shitrazse.*", RegexOption.IGNORE_CASE),
+            Regex(".*rooelmi.*", RegexOption.IGNORE_CASE),
+            Regex(".*bufutbolist.*", RegexOption.IGNORE_CASE),
+            Regex(".*depresitsporta.*", RegexOption.IGNORE_CASE),
+            Regex(".*saodspude.*", RegexOption.IGNORE_CASE),
+            Regex(".*bvdolar.*", RegexOption.IGNORE_CASE),
+            Regex(".*kraliny.*", RegexOption.IGNORE_CASE),
+            Regex(".*subscribe.*", RegexOption.IGNORE_CASE),
             Regex(".*vogue\\s*world.*", RegexOption.IGNORE_CASE),
             Regex(".*hollywood.*", RegexOption.IGNORE_CASE),
             Regex(".*gracieabrams.*", RegexOption.IGNORE_CASE),
@@ -287,7 +347,7 @@ class VideoIndexer(private val context: Context) {
             "canli", "canlı", "live", "manti", "mantı", "polis", "avea", "opet", "avis",
             "aygaz", "bwin", "respect", "ria", "eh", "ff", "f.f", "on", "tr", "hd", "mp4",
             "part", "edit", "video", "image", "webp", "jpg", "bmvel", "bmvela", "privat",
-            "private", "scalarx", "scalalx", "baueli", "inshot"
+            "private", "scalarx", "scalalx", "baueli", "inshot", "braten", "hemen", "türen"
         )
 
         private val oldEnglishJunkWords = setOf(
@@ -466,6 +526,10 @@ class VideoIndexer(private val context: Context) {
             return cleaned
         }
 
+        /**
+         * Instagram/TikTok simgesinin yanındaki kullanıcı adlarını (BDAMLADILA, 6GALERIKKOO,
+         * ENESYILDIZ99, BKOFTILENK vb.) ve anlamsız harf yığınlarını tamamen temizler!
+         */
         fun filterWatermarks(rawText: String): String {
             if (rawText.isBlank()) return ""
             val lines = rawText
@@ -487,13 +551,33 @@ class VideoIndexer(private val context: Context) {
                 if (lower in singleWordTrash) return@filter false
                 if (cleanLine.matches(Regex("^[0-9\\W_]+$"))) return@filter false
 
+                // Tamamı büyük harf/rakam olan Instagram sayfa adı / logo çöpleri (ör: BDAMLADILA, 6GALERIKKOO, GOKSJXKCJDCH)
+                val tokens = cleanLine.split(Regex("\\s+"))
+                if (tokens.all { tok -> tok.length >= 4 && tok.all { !it.isLetter() || it.isUpperCase() } && (tok.length <= 18 && !cleanLine.contains(" ") || tok.any { it.isDigit() }) }) {
+                    return@filter false
+                }
+                if (tokens.size == 1 && cleanLine.length >= 6 && cleanLine.all { !it.isLetter() || it.isUpperCase() }) {
+                    return@filter false
+                }
+
                 val isShortAllCapsLogo = cleanLine.length <= 6 && cleanLine.all { !it.isLetter() || it.isUpperCase() } && !cleanLine.contains(" ")
                 if (isShortAllCapsLogo) return@filter false
 
                 spamAndWatermarkPatterns.none { pattern -> pattern.containsMatchIn(cleanLine) }
             }
 
-            val joined = filtered.distinct().joinToString(" ").replace(Regex("\\s+"), " ").trim()
+            // Satır içi tekil BÜYÜKHARF Instagram kullanıcı adı tokenlarını da temizle
+            val cleanedLines = filtered.map { line ->
+                line.split(Regex("\\s+")).filter { tok ->
+                    val stripped = tok.trim('.', ',', ':', ';', '!', '?')
+                    val isInstaHandleToken = stripped.length >= 7 &&
+                        stripped.all { !it.isLetter() || it.isUpperCase() } &&
+                        stripped.any { it.isLetter() }
+                    !isInstaHandleToken && spamAndWatermarkPatterns.none { it.containsMatchIn(stripped) }
+                }.joinToString(" ")
+            }.filter { it.count { c -> c.isLetter() } >= 4 }
+
+            val joined = cleanedLines.distinct().joinToString(" ").replace(Regex("\\s+"), " ").trim()
             return if (joined.count { it.isLetter() } >= 4) joined else ""
         }
 
@@ -625,7 +709,12 @@ class VideoIndexer(private val context: Context) {
                 invalidateCacheFor(item.filePath)
                 continue
             }
-            val cleanedSpoken = autoCorrectTurkishReplik(item.spokenText)
+            var cleanedSpoken = autoCorrectTurkishReplik(item.spokenText)
+            if (OnlineAiAnalyzer.isMusicOrEmptyTranscript(cleanedSpoken) ||
+                cleanedSpoken.contains("şarkı sözleri", ignoreCase = true) && cleanedSpoken.contains("diyalog", ignoreCase = true)
+            ) {
+                cleanedSpoken = ""
+            }
             val cleanedScreen = filterWatermarks(item.screenText)
             val cleanedVisual = cleanVisualLabelsString(item.visualLabels)
             if (cleanedSpoken != item.spokenText || cleanedScreen != item.screenText || cleanedVisual != item.visualLabels) {
@@ -681,35 +770,6 @@ class VideoIndexer(private val context: Context) {
         return@withContext result
     }
 
-    suspend fun indexNewMediaOnly(
-        albumInfo: AlbumInfo,
-        voskModel: Model?,
-        onProgress: (current: Int, total: Int, name: String) -> Unit
-    ): Int = withContext(Dispatchers.IO) {
-        val existingPaths = db.getAllIndexedPaths().toHashSet()
-        val mediaList = queryGalleryMedia(albumInfo)
-        val newItems = mediaList.filter { it.path !in existingPaths }
-
-        val total = newItems.size
-        newItems.forEachIndexed { index, item ->
-            val file = File(item.path)
-            onProgress(index + 1, total, item.name)
-            if (file.exists()) {
-                try {
-                    val metadata = if (item.isVideo) {
-                        extractVideoData(file, voskModel, item.albumName)
-                    } else {
-                        extractImageData(file, item.albumName)
-                    }
-                    db.insertMeme(metadata)
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }
-        }
-        return@withContext total
-    }
-
     fun queryGalleryMediaPublic(albumInfo: AlbumInfo): List<GalleryMediaItem> = queryGalleryMedia(albumInfo)
 
     private fun queryGalleryMedia(albumInfo: AlbumInfo): List<GalleryMediaItem> {
@@ -752,12 +812,6 @@ class VideoIndexer(private val context: Context) {
         return mediaList
     }
 
-    /**
-     * V12.0 Hibrit Fotoğraf Analizi:
-     * 1. Önce yerel ML Kit OCR ile yazıyı anında okur.
-     * 2. İnternet varsa Qwen 3.8 27B Vision ile hem bozuk OCR harflerini ("Oiet elntelk...") düzeltir
-     *    hem de fotoğrafın ne olduğunu Türkçe betimler.
-     */
     suspend fun extractImageData(file: File, albumName: String = ""): MemeVideo {
         var localScreenText = ""
         var offlineVisualScene = ""
@@ -819,10 +873,6 @@ class VideoIndexer(private val context: Context) {
         return found.take(2).joinToString(" • ")
     }
 
-    /**
-     * Videodan 3 farklı saniyede (OPTION_CLOSEST ile tam kare) yerel ML Kit OCR çalıştırır.
-     * Hem çevrimiçi hem çevrimdışı modda altyazıların %100 yakalanmasını garanti eder!
-     */
     suspend fun extractLocalVideoOcrAndScene(file: File): Triple<Long, String, String> = withContext(Dispatchers.IO) {
         val retriever = MediaMetadataRetriever()
         var durationMs = 0L
@@ -888,13 +938,6 @@ class VideoIndexer(private val context: Context) {
         Triple(durationMs, screenTexts.joinToString(" | "), offlineScene)
     }
 
-    /**
-     * V12.0 Hibrit Video Analizi:
-     * 1. Yerel 3-kare (OPTION_CLOSEST) Altyazı OCR her zaman çalışır (altyazılar asla kaçmaz!).
-     * 2. İnternet varsa Çevrimiçi Çoklu Ajan (Sıkıştırılmış AAC + Whisper Turbo & Qwen 3.8 27B Vision)
-     *    yerel OCR ipucuyla birlikte paralel çalışır.
-     * 3. İnternet yoksa veya çevrimiçi ajan boş dönerse Vosk + yerel OCR devreye girer.
-     */
     suspend fun extractVideoData(file: File, voskModel: Model?, albumName: String = ""): MemeVideo = coroutineScope {
         val localVisualDeferred = async(Dispatchers.IO) {
             extractLocalVideoOcrAndScene(file)
@@ -963,36 +1006,6 @@ class VideoIndexer(private val context: Context) {
         return found.take(2).joinToString(" • ")
     }
 
-    suspend fun detectSceneForVideoFile(videoFile: File): String {
-        val retriever = MediaMetadataRetriever()
-        try {
-            retriever.setDataSource(videoFile.absolutePath)
-            val bitmap = retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST)
-                ?: retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-            if (bitmap != null) {
-                val inputImage = InputImage.fromBitmap(bitmap, 0)
-                val res = extractStrictTurkishSceneLabels(inputImage)
-                bitmap.recycle()
-                return res
-            }
-        } catch (_: Exception) {
-        } finally {
-            try { retriever.release() } catch (_: Exception) {}
-        }
-        return ""
-    }
-
-    fun transcribeSingleVideo(videoFile: File, voskModel: Model): String {
-        return transcribeVideoAudio(videoFile, voskModel)
-    }
-
-    /**
-     * V12.0 Ultra Veri Tasarruflu Ses Çıkarıcı:
-     * Videonun içindeki orijinal sıkıştırılmış AAC ses paketlerini (ilk 12 sn) yeniden kodlamadan (zero-reencode)
-     * ADTS başlıklarıyla birleştirir.
-     * - Boyut: 512 KB WAV yerine sadece ~20-35 KB! (1.200 video için 614 MB yerine ~30 MB!)
-     * - Hız: CPU decode/encode yapmadığı için 10 kat daha hızlıdır (2-3 milisaniye sürer).
-     */
     fun extractCompressedAacForAi(videoFile: File, maxSeconds: Int = 12): ByteArray {
         val extractor = MediaExtractor()
         try {
@@ -1014,19 +1027,9 @@ class VideoIndexer(private val context: Context) {
             val sampleRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) format.getInteger(MediaFormat.KEY_SAMPLE_RATE) else 44100
             val channelCount = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 2
             val freqIdx = when (sampleRate) {
-                96000 -> 0
-                88200 -> 1
-                64000 -> 2
-                48000 -> 3
-                44100 -> 4
-                32000 -> 5
-                24000 -> 6
-                22050 -> 7
-                16000 -> 8
-                12000 -> 9
-                11025 -> 10
-                8000 -> 11
-                else -> 4
+                96000 -> 0; 88200 -> 1; 64000 -> 2; 48000 -> 3; 44100 -> 4
+                32000 -> 5; 24000 -> 6; 22050 -> 7; 16000 -> 8; 12000 -> 9
+                11025 -> 10; 8000 -> 11; else -> 4
             }
             val chanCfg = channelCount.coerceIn(1, 2)
 
@@ -1043,7 +1046,7 @@ class VideoIndexer(private val context: Context) {
 
                 val packetLen = sampleSize + 7
                 val adts = ByteArray(7)
-                val profile = 2 // AAC LC
+                val profile = 2
                 adts[0] = 0xFF.toByte()
                 adts[1] = 0xF9.toByte()
                 adts[2] = (((profile - 1) shl 6) + (freqIdx shl 2) + (chanCfg shr 2)).toByte()

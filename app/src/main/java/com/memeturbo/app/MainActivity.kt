@@ -15,6 +15,7 @@ import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
 import android.util.TypedValue
+import android.view.GestureDetector
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -39,6 +40,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.abs
 
 class MainActivity : AppCompatActivity() {
 
@@ -56,6 +58,7 @@ class MainActivity : AppCompatActivity() {
     private var searchJob: Job? = null
     private var lastObservedTick = -1
     private var cachedAllMemes: List<MemeVideo>? = null
+    private var currentFilteredList: List<MemeVideo> = emptyList()
 
     private lateinit var scanControlRow: LinearLayout
     private lateinit var pauseResumeBtn: Button
@@ -72,7 +75,10 @@ class MainActivity : AppCompatActivity() {
     private var internalPlayerLayout: FrameLayout? = null
     private var internalVideoView: VideoView? = null
     private var internalImageView: ImageView? = null
+    private var sequentialToggleBtn: Button? = null
     private var currentPreviewMeme: MemeVideo? = null
+    private var currentPreviewIndex: Int = -1
+    private var isSequentialPlayEnabled: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -92,13 +98,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         val title = TextView(this).apply {
-            text = "⚡ ReplikBul • MemeTurbo V12"
+            text = "⚡ ReplikBul • MemeTurbo V13"
             textSize = 20f
             setTextColor(Color.WHITE)
         }
 
         val privacyBanner = TextView(this).apply {
-            text = "🚀 V12 Hibrit Motor: AAC Ses (%95 Veri Tasarrufu) + Qwen 3.8 Vision + 3-Kare Altyazı OCR\n🎙️ Sadece 'Müzik' yazan veya altyazısı eksik kalan videoları 1 dokunuşla tamamlar."
+            text = "🚀 V13 Akıllı Motor: Çift Tık Onarıldı • Mantık Düzeltme Ajanı • Sağa/Sola Sekme Kaydırma • Sırayla Oynatma\n🔍 'istesende' veya 'burda' gibi yazım hatalarını da otomatik bulur."
             textSize = 11.5f
             setTextColor(Color.parseColor("#38BDF8"))
             setPadding(0, dpToPx(6f), 0, dpToPx(8f))
@@ -316,6 +322,25 @@ class MainActivity : AppCompatActivity() {
         searchBoxContainer.addView(clearSearchBtn)
         mainContainer.addView(searchBoxContainer)
 
+        // Instagram tarzı sağa/sola kaydırarak Tümü <-> Videolar <-> Fotoğraflar sekme geçişi
+        val tabSwipeDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
+                if (e1 == null) return false
+                val dx = e2.x - e1.x
+                val dy = e2.y - e1.y
+                if (abs(dx) > dpToPx(75f) && abs(dx) > abs(dy) * 1.4f && abs(velocityX) > 250f) {
+                    if (dx < 0 && currentFilter < 2) {
+                        switchTab(currentFilter + 1)
+                        return true
+                    } else if (dx > 0 && currentFilter > 0) {
+                        switchTab(currentFilter - 1)
+                        return true
+                    }
+                }
+                return false
+            }
+        })
+
         gridLayoutManager = GridLayoutManager(this, 2)
         galleryRecycler = RecyclerView(this).apply {
             layoutManager = gridLayoutManager
@@ -330,6 +355,7 @@ class MainActivity : AppCompatActivity() {
                 if (event.action == MotionEvent.ACTION_DOWN) {
                     hideKeyboard()
                 }
+                tabSwipeDetector.onTouchEvent(event)
                 false
             }
             addOnScrollListener(object : RecyclerView.OnScrollListener() {
@@ -409,6 +435,12 @@ class MainActivity : AppCompatActivity() {
         startupClean()
     }
 
+    private fun switchTab(newFilter: Int) {
+        currentFilter = newFilter
+        updateTabColors()
+        filterList(searchInput.text.toString().trim(), immediate = true)
+    }
+
     private fun hideKeyboard() {
         searchInput.clearFocus()
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
@@ -426,9 +458,7 @@ class MainActivity : AppCompatActivity() {
                     internalPlayerLayout?.visibility == View.VISIBLE -> hideInternalPlayer()
                     !searchInput.text.isNullOrEmpty() -> clearSearchAndRestorePosition()
                     currentFilter != 0 -> {
-                        currentFilter = 0
-                        updateTabColors()
-                        filterList("", restoreScrollWhenEmpty = true, immediate = true)
+                        switchTab(0)
                     }
                     isScrolledDown -> {
                         savedScrollPosition = 0
@@ -517,22 +547,21 @@ class MainActivity : AppCompatActivity() {
         }
 
         val onlineStatus = if (OnlineAiAnalyzer.isOnline(this)) {
-            "🟢 İnternet bağlı: Çoklu Ajan (Whisper Turbo AAC + Qwen 3.8 Vision + 3-Kare Altyazı OCR) aktif!"
+            "🟢 İnternet bağlı: Çoklu Ajan (Whisper AAC + Mantık Düzeltme + Qwen 3.8 Vision) aktif!"
         } else {
             "🟠 İnternet bağlı değil: Çevrimdışı 3-Kare Altyazı OCR + Vosk motoru kullanılacak."
         }
 
         AlertDialog.Builder(this)
-            .setTitle("🌐 V12 Çoklu Ajan & Altyazı Çözümleme")
+            .setTitle("🌐 V13 Çoklu Ajan & Mantık Çözümleme")
             .setMessage(
                 "Seçili albüm: $albumLabel\n\n" +
                 "$onlineStatus\n\n" +
-                "• Sadece 'Müzik' yazan veya altyazısı boş kalan videoların ekran yazılarını okur.\n" +
-                "• Repliği zaten doğru olan videoların sesini tekrar indirmez, sadece altyazısını ekler!\n" +
-                "• Fotoğrafları Qwen 3.8 Vision ile Türkçe betimler.\n" +
+                "• Daha önce kontrol edilen ve repliği iyi olan videoları tekrar taramaz.\n" +
+                "• Mantıksız kelimeleri Türkçe bağlama göre düzeltir ve Instagram sayfa adlarını siler.\n" +
                 "• ✏️ ile elle düzelttiğin kayıtlara kesinlikle dokunulmaz."
             )
-            .setPositiveButton("⚡ Eksik Altyazı & Müzikleri Çöz") { _, _ ->
+            .setPositiveButton("⚡ Eksik & Zayıfları Çöz") { _, _ ->
                 launchRepairIntent(forceFullAlbum = false)
             }
             .setNeutralButton("🔥 Tüm Albümü Baştan Yenile") { _, _ ->
@@ -562,7 +591,6 @@ class MainActivity : AppCompatActivity() {
                 delay(60)
             }
 
-            // Veritabanı okumasını IO üzerinde, filtrelemeyi Default üzerinde çalıştır (Sıfır ANR!)
             val allCached = cachedAllMemes ?: withContext(Dispatchers.IO) {
                 MemeDatabase.getInstance(this@MainActivity).memeDao().getAllMemes()
             }.also {
@@ -588,6 +616,7 @@ class MainActivity : AppCompatActivity() {
                 Pair(finalItems, albumFiltered.size)
             }
 
+            currentFilteredList = resultPair.first
             adapter.submitList(resultPair.first) {
                 if (query.isNotEmpty()) {
                     galleryRecycler.scrollToPosition(0)
@@ -621,11 +650,7 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(0, dpToPx(34f), 1f).apply {
                 setMargins(dpToPx(3f), 0, dpToPx(3f), 0)
             }
-            setOnClickListener {
-                currentFilter = filterId
-                updateTabColors()
-                filterList(searchInput.text.toString().trim(), immediate = true)
-            }
+            setOnClickListener { switchTab(filterId) }
         }
     }
 
@@ -650,7 +675,7 @@ class MainActivity : AppCompatActivity() {
     private fun showXiaomiPermissionGuide() {
         AlertDialog.Builder(this)
             .setTitle("🔑 Erişilebilirlik İzni Rehberi")
-            .setMessage("Xiaomi/Android güvenlik kilidini açmak için:\n\n1. Açılacak sayfada en alttaki 'Kısıtlanmış ayarlara izin ver' seçeneğini açın.\n2. Ardından Erişilebilirlik -> İndirilen Uygulamalar -> MemeTurbo'yu aktif edin.")
+            .setMessage("Xiaomi/Android güvenlik kilidini açmak için:\n\n1. Açılacak sayfada en alttaki 'Kısıtlanmış ayarlara izin ver' seçeneğini açın.\n2. Ardından Erişilebilirlik -> İndirilen Uygulamalar -> MemeTurbo'yu aktif edin.\n\nNot: Daha önce 'Hatalı çalışıyor' uyarısı aldıysanız kapatıp tekrar açmanız yeterlidir.")
             .setPositiveButton("Ayarlara Git") { _, _ ->
                 try {
                     val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
@@ -724,7 +749,7 @@ class MainActivity : AppCompatActivity() {
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.CENTER
-            ).apply { setMargins(dpToPx(20f), 0, dpToPx(20f), 0) }
+            ).apply { setMargins(dpToPx(16f), 0, dpToPx(16f), 0) }
         }
 
         internalVideoView = VideoView(this).apply {
@@ -745,13 +770,77 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        val btnRow = LinearLayout(this).apply {
+        val btnRow1 = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dpToPx(14f) }
+            ).apply { topMargin = dpToPx(12f) }
+        }
+
+        val btnRow2 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dpToPx(8f) }
+        }
+
+        val prevBtn = Button(this).apply {
+            text = "⏮️ Önceki"
+            setTextColor(Color.WHITE)
+            textSize = 11f
+            isAllCaps = false
+            setPadding(dpToPx(10f), 0, dpToPx(10f), 0)
+            background = GradientDrawable().apply {
+                cornerRadius = dpToPx(16f).toFloat()
+                setColor(Color.parseColor("#1E293B"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                dpToPx(36f)
+            ).apply { rightMargin = dpToPx(6f) }
+            setOnClickListener { playAdjacentMedia(-1) }
+        }
+
+        sequentialToggleBtn = Button(this).apply {
+            text = "🔁 Sırayla: KAPALI"
+            setTextColor(Color.WHITE)
+            textSize = 11f
+            isAllCaps = false
+            setPadding(dpToPx(10f), 0, dpToPx(10f), 0)
+            background = GradientDrawable().apply {
+                cornerRadius = dpToPx(16f).toFloat()
+                setColor(Color.parseColor("#334155"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                dpToPx(36f)
+            ).apply { rightMargin = dpToPx(6f) }
+            setOnClickListener {
+                isSequentialPlayEnabled = !isSequentialPlayEnabled
+                updateSequentialButtonUi()
+                currentPreviewMeme?.let { showInternalPlayer(it) }
+            }
+        }
+
+        val nextBtn = Button(this).apply {
+            text = "⏭️ Sıradaki"
+            setTextColor(Color.WHITE)
+            textSize = 11f
+            isAllCaps = false
+            setPadding(dpToPx(10f), 0, dpToPx(10f), 0)
+            background = GradientDrawable().apply {
+                cornerRadius = dpToPx(16f).toFloat()
+                setColor(Color.parseColor("#0284C7"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                dpToPx(36f)
+            )
+            setOnClickListener { playAdjacentMedia(+1) }
         }
 
         val aiSingleBtn = Button(this).apply {
@@ -766,7 +855,7 @@ class MainActivity : AppCompatActivity() {
             }
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
-                dpToPx(38f)
+                dpToPx(36f)
             ).apply { rightMargin = dpToPx(8f) }
             setOnClickListener {
                 val target = currentPreviewMeme ?: return@setOnClickListener
@@ -774,7 +863,7 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this@MainActivity, "⚠️ İnternet bağlantısı gerekli!", Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
-                Toast.makeText(this@MainActivity, "🌐 AI + Altyazı OCR çözümlüyor...", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, "🌐 AI + Mantık Ajanı çözümlüyor...", Toast.LENGTH_SHORT).show()
                 lifecycleScope.launch {
                     val file = File(target.filePath)
                     val indexer = VideoIndexer(this@MainActivity)
@@ -828,7 +917,7 @@ class MainActivity : AppCompatActivity() {
             }
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
-                dpToPx(38f)
+                dpToPx(36f)
             ).apply { rightMargin = dpToPx(8f) }
             setOnClickListener {
                 currentPreviewMeme?.let { m ->
@@ -847,25 +936,53 @@ class MainActivity : AppCompatActivity() {
                 cornerRadius = dpToPx(16f).toFloat()
                 setColor(Color.parseColor("#334155"))
             }
-            layoutParams = LinearLayout.LayoutParams(dpToPx(90f), dpToPx(38f))
+            layoutParams = LinearLayout.LayoutParams(dpToPx(86f), dpToPx(36f))
             setOnClickListener { hideInternalPlayer() }
         }
 
-        btnRow.addView(aiSingleBtn)
-        btnRow.addView(fixBtn)
-        btnRow.addView(closeBtn)
+        btnRow1.addView(prevBtn)
+        sequentialToggleBtn?.let { btnRow1.addView(it) }
+        btnRow1.addView(nextBtn)
+
+        btnRow2.addView(aiSingleBtn)
+        btnRow2.addView(fixBtn)
+        btnRow2.addView(closeBtn)
 
         contentBox.addView(internalVideoView)
         contentBox.addView(internalImageView)
-        contentBox.addView(btnRow)
+        contentBox.addView(btnRow1)
+        contentBox.addView(btnRow2)
         overlay.addView(contentBox)
 
         internalPlayerLayout = overlay
         root.addView(overlay)
     }
 
+    private fun updateSequentialButtonUi() {
+        sequentialToggleBtn?.apply {
+            text = if (isSequentialPlayEnabled) "🔁 Sırayla: AÇIK" else "🔁 Sırayla: KAPALI"
+            background = GradientDrawable().apply {
+                cornerRadius = dpToPx(16f).toFloat()
+                setColor(if (isSequentialPlayEnabled) Color.parseColor("#16A34A") else Color.parseColor("#334155"))
+            }
+        }
+    }
+
+    private fun playAdjacentMedia(offset: Int) {
+        if (currentFilteredList.isEmpty()) return
+        val curIdx = if (currentPreviewIndex in currentFilteredList.indices) {
+            currentPreviewIndex
+        } else {
+            currentFilteredList.indexOfFirst { it.filePath == currentPreviewMeme?.filePath }
+        }
+        if (curIdx == -1) return
+        val nextIdx = (curIdx + offset + currentFilteredList.size) % currentFilteredList.size
+        showInternalPlayer(currentFilteredList[nextIdx])
+    }
+
     private fun showInternalPlayer(meme: MemeVideo) {
         currentPreviewMeme = meme
+        currentPreviewIndex = currentFilteredList.indexOfFirst { it.filePath == meme.filePath }
         val overlay = internalPlayerLayout ?: return
         val vView = internalVideoView ?: return
         val iView = internalImageView ?: return
@@ -875,7 +992,14 @@ class MainActivity : AppCompatActivity() {
             iView.visibility = View.GONE
             vView.visibility = View.VISIBLE
             vView.setVideoPath(meme.filePath)
-            vView.setOnPreparedListener { mp -> mp.isLooping = true }
+            vView.setOnPreparedListener { mp ->
+                mp.isLooping = !isSequentialPlayEnabled
+            }
+            vView.setOnCompletionListener {
+                if (isSequentialPlayEnabled) {
+                    playAdjacentMedia(+1)
+                }
+            }
             vView.start()
         } else {
             vView.stopPlayback()

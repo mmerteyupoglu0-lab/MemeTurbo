@@ -143,6 +143,8 @@ class ScanForegroundService : Service() {
         currentJob = serviceScope.launch {
             val indexer = VideoIndexer(this@ScanForegroundService)
             val db = MemeDatabase.getInstance(this@ScanForegroundService).memeDao()
+            val prefs = getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+            val ocrCheckedSet = prefs.getStringSet("ocr_checked_paths", emptySet())?.toMutableSet() ?: mutableSetOf()
             try {
                 stateFlow.value = ScanState(isRunning = true, statusMessage = "${albumInfo.name} kontrol ediliyor...")
 
@@ -160,7 +162,6 @@ class ScanForegroundService : Service() {
                     return@launch
                 }
 
-                // AŞAMA 1: TEK İŞLEMDE (BATCH) ANINDA ÖN-İNDEKSLEME (Sıfır kilitlenme!)
                 stateFlow.value = stateFlow.value.copy(
                     statusMessage = "⚡ $total medya hızlı listeye ekleniyor..."
                 )
@@ -188,7 +189,6 @@ class ScanForegroundService : Service() {
                 }
                 stateFlow.value = stateFlow.value.copy(refreshTick = stateFlow.value.refreshTick + 1)
 
-                // AŞAMA 2: HİBRİT (ÇEVRİMİÇİ AI + YEREL ALTYAZI OCR) TURBO ANALİZ
                 val model = if (!OnlineAiAnalyzer.isOnline(this@ScanForegroundService)) ensureVoskModel(indexer) else voskModel
 
                 newItems.forEachIndexed { index, item ->
@@ -217,19 +217,21 @@ class ScanForegroundService : Service() {
                                 indexer.extractImageData(file, item.albumName)
                             }
                             db.insertMeme(metadata)
+                            ocrCheckedSet.add(file.absolutePath)
                             VideoIndexer.invalidateCacheFor(file.absolutePath)
                         } catch (e: Exception) {
                             e.printStackTrace()
                         }
                     }
 
-                    // Arayüzü yormamak için her 24 öğede bir hafif güncelleme
                     if (curNum % 24 == 0) {
+                        prefs.edit().putStringSet("ocr_checked_paths", ocrCheckedSet).apply()
                         stateFlow.value = stateFlow.value.copy(refreshTick = stateFlow.value.refreshTick + 1)
                     }
                     delay(20)
                 }
 
+                prefs.edit().putStringSet("ocr_checked_paths", ocrCheckedSet).apply()
                 val totalDb = db.getCount()
                 stateFlow.value = ScanState(
                     isRunning = false,
@@ -253,6 +255,8 @@ class ScanForegroundService : Service() {
         currentJob = serviceScope.launch {
             val indexer = VideoIndexer(this@ScanForegroundService)
             val db = MemeDatabase.getInstance(this@ScanForegroundService).memeDao()
+            val prefs = getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+            val ocrCheckedSet = prefs.getStringSet("ocr_checked_paths", emptySet())?.toMutableSet() ?: mutableSetOf()
             try {
                 stateFlow.value = ScanState(isRunning = true, statusMessage = "🌐 AI çözümleme listesi hazırlanıyor...")
                 indexer.cleanExistingDatabaseRecords()
@@ -260,18 +264,16 @@ class ScanForegroundService : Service() {
                 val onlineAvailable = OnlineAiAnalyzer.isOnline(this@ScanForegroundService)
                 val model = if (!onlineAvailable) ensureVoskModel(indexer) else voskModel
 
-                val prefs = getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
                 val editedPaths = prefs.getStringSet("user_edited_paths", emptySet()) ?: emptySet()
 
                 val allItems = db.getAllMemes().let { list ->
                     if (albumInfo.isAll) list else list.filter { it.albumName == albumInfo.name }
                 }
 
-                // Elle (✏️) düzenlediklerine ASLA dokunma!
-                // forceFullAlbum == false ise:
-                // - Sadece "Müzik" veya zayıf dolgu kelimesi olan videoları,
-                // - Altyazısı (screenText) boş kalmış videoları,
-                // - Ve çevrimiçi AI sahne betimlemesi (🖼️ ...) almamış fotoğrafları seç!
+                // V13.0 Akıllı Seçim:
+                // - Elle (✏️) düzenlediklerine ASLA dokunma.
+                // - Konuşması zaten iyi olan VE daha önce altyazı kontrolü yapılmış (ocrCheckedSet) videolara TEKRAR dokunma!
+                // - Sadece gerçekten konuşması/yazısı zayıf, "Müzik" veya mantıksız kalmış olanları seç!
                 val targetItems = allItems.filter { item ->
                     if (item.filePath in editedPaths) return@filter false
                     if (forceFullAlbum) return@filter true
@@ -285,8 +287,13 @@ class ScanForegroundService : Service() {
                             !OnlineAiAnalyzer.isMusicOrEmptyTranscript(spoken) &&
                             !VideoIndexer.isWeakSpokenFiller(spoken)
                         val hasGoodScreen = screen.length >= 6
-                        // Eğer konuşma zayıfsa/müzikse VEYA altyazı hiç okunmamışsa düzeltmeye al!
-                        !hasGoodSpeech || !hasGoodScreen
+                        val alreadyOcrChecked = item.filePath in ocrCheckedSet
+
+                        if (hasGoodSpeech && (hasGoodScreen || alreadyOcrChecked)) {
+                            false
+                        } else {
+                            !hasGoodSpeech || (!hasGoodScreen && !alreadyOcrChecked)
+                        }
                     } else {
                         val hasAiPhotoScene = visual.startsWith("🖼️")
                         screen.isBlank() && !hasAiPhotoScene
@@ -298,7 +305,7 @@ class ScanForegroundService : Service() {
                 if (total == 0) {
                     stateFlow.value = ScanState(
                         isRunning = false,
-                        statusMessage = "✅ Seçili albümde eksik veya altyazısız medya kalmadı!",
+                        statusMessage = "✅ Seçili albümde eksik veya zayıf medya kalmadı!",
                         refreshTick = stateFlow.value.refreshTick + 1
                     )
                     return@launch
@@ -312,7 +319,7 @@ class ScanForegroundService : Service() {
                     val file = File(item.filePath)
                     val curNum = idx + 1
                     val shortName = VideoIndexer.cleanFileNameForDisplay(item.fileName).ifEmpty { item.fileName.take(20) }
-                    val modeTag = if (OnlineAiAnalyzer.isOnline(this@ScanForegroundService)) "🌐 AI+OCR" else "🔧 Çevrimdışı"
+                    val modeTag = if (OnlineAiAnalyzer.isOnline(this@ScanForegroundService)) "🌐 AI+Mantık" else "🔧 Çevrimdışı"
                     val msg = "$modeTag ($curNum/$total): $shortName"
 
                     stateFlow.value = stateFlow.value.copy(
@@ -332,9 +339,6 @@ class ScanForegroundService : Service() {
                                 !OnlineAiAnalyzer.isMusicOrEmptyTranscript(oldSpoken) &&
                                 !VideoIndexer.isWeakSpokenFiller(oldSpoken)
 
-                            // HIZ & VERİ TASARRUFU:
-                            // Eğer videonun konuşması (Whisper) zaten %85 doğruysa ve sadece altyazısı eksikse,
-                            // sesi tekrar internetten yükleme! Sadece yerel 3-kare Altyazı OCR + (gerekirse) Vision çalıştır!
                             val fresh = if (item.isVideo && oldHasGoodSpeech && !forceFullAlbum) {
                                 val (dur, localOcr, localScene) = indexer.extractLocalVideoOcrAndScene(file)
                                 MemeVideo(
@@ -373,6 +377,7 @@ class ScanForegroundService : Service() {
                                 screenText = finalScreen,
                                 visualLabels = finalVisual
                             )
+                            ocrCheckedSet.add(item.filePath)
                             VideoIndexer.invalidateCacheFor(item.filePath)
                         } catch (e: Exception) {
                             e.printStackTrace()
@@ -380,14 +385,16 @@ class ScanForegroundService : Service() {
                     }
 
                     if (curNum % 20 == 0) {
+                        prefs.edit().putStringSet("ocr_checked_paths", ocrCheckedSet).apply()
                         stateFlow.value = stateFlow.value.copy(refreshTick = stateFlow.value.refreshTick + 1)
                     }
                     delay(25)
                 }
 
+                prefs.edit().putStringSet("ocr_checked_paths", ocrCheckedSet).apply()
                 stateFlow.value = ScanState(
                     isRunning = false,
-                    statusMessage = "✅ $total medya AI + Altyazı OCR ile güncellendi!",
+                    statusMessage = "✅ $total medya AI + Mantık Süzgeci ile güncellendi!",
                     refreshTick = stateFlow.value.refreshTick + 1
                 )
             } catch (_: CancellationException) {

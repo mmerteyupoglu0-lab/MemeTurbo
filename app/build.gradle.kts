@@ -15,8 +15,8 @@ android {
         applicationId = "com.memeturbo.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 22
-        versionName = "3.2.0"
+        versionCode = 23
+        versionName = "3.3.0"
     }
 
     signingConfigs {
@@ -51,8 +51,6 @@ android {
     }
 }
 
-// GitHub web yükleyicisi .github klasörünü atlasa bile Gradle derleme sırasında
-// Türkçe Vosk ses modelini doğrudan indirip APK'nın içine (assets/vosk_tr.zip) gömer!
 val downloadVoskModel by tasks.registering {
     doLast {
         val assetsDir = file("src/main/assets")
@@ -91,11 +89,9 @@ dependencies {
     implementation("androidx.room:room-ktx:$roomVersion")
     ksp("androidx.room:room-compiler:$roomVersion")
 
-    // Ekran Yazısı (OCR) ve Sadece Hayvan/Nesne/Sahne için Türkçe Görsel Etiketleme
     implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation("com.google.mlkit:image-labeling:17.0.9")
 
-    // Türkçe Çevrimdışı Ses Tanıma (Vosk Kaldi)
     implementation("com.alphacephei:vosk-android:0.3.47")
     implementation("net.java.dev.jna:jna:5.13.0@aar")
 

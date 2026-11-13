@@ -43,7 +43,6 @@
 
         <service
             android:name=".SmartChatTriggerService"
-            android:process=":overlay"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="false">
             <intent-filter>

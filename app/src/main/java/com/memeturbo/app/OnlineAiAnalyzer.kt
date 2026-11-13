@@ -25,15 +25,14 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * V12.0 Çoklu Ajan (Multi-Agent) Çevrimiçi Yapay Zeka Analiz Motoru:
- * - 1. Ajan (Ses & Şarkı Ajanı): Groq Whisper Large v3 Turbo + ADTS AAC Ses Sıkıştırma (~25 KB/video)
- *   ve verbose_json no_speech_prob / müzik filtresi ile gerçek konuşmaları ve şarkı sözlerini çıkarır.
- * - 2. Ajan (Görsel, Karaoke Altyazı & Kara Mizah Ajanı): Groq Qwen 3.8 27B Vision (qwen/qwen3.8-27b)
- *   + dinamik aktif Vision model keşfi (/openai/v1/models) ile 2x2 kare kolajdaki altyazıları ve sahneyi okur.
+ * V13.0 Çoklu Ajan (Multi-Agent) Çevrimiçi Yapay Zeka Analiz Motoru:
+ * - 1. Ajan (Ses Ajanı): Groq Whisper Large v3 Turbo (prompt sızıntısız + ADTS AAC sıkıştırmalı)
+ * - 2. Ajan (Mantık & Düzeltme Ajanı): Groq GPT-OSS 20B / Llama 3.1 8B ile Whisper ve OCR'daki
+ *   mantıksız kelimeleri ("tahvimler" -> "takvimler", "Braten" -> sil) Türkçe bağlama göre düzeltir.
+ * - 3. Ajan (Görsel & Altyazı Ajanı): Groq Qwen 3.8 27B Vision ile fotoğrafları ve eksik altyazıları betimler.
  */
 object OnlineAiAnalyzer {
 
-    // GitHub güvenlik tarayıcılarının anahtarı iptal etmesini önlemek için XOR ile gizlenmiş anahtar
     private val encodedGroqKey = intArrayOf(
         61, 79, 26, 70, 199, 38, 84, 63, 53, 117, 52, 47, 215, 57, 99, 27,
         45, 5, 0, 40, 253, 14, 17, 10, 13, 123, 21, 96, 236, 112, 97, 52,
@@ -78,12 +77,14 @@ object OnlineAiAnalyzer {
     private val whisperHallucinations = listOf(
         "altyazı m.k", "altyazi m.k", "abone olmayı unutmayın", "izlediğiniz için teşekkürler",
         "teşekkür ederim", "kanalımıza abone", "beğenmeyi unutmayın", "www.", ".com",
-        "amara.org", "türkçe altyazı", "alttaki zil", "müzik çalıyor", "alkışlar"
+        "amara.org", "türkçe altyazı", "alttaki zil", "müzik çalıyor", "alkışlar",
+        "şarkı sözleri, rap", "türkçe video repliği", "rap ve diyalog", "rap diyalog"
     )
 
     private val musicOnlyOutputs = setOf(
         "müzik", "muzik", "music", "[müzik]", "(müzik)", "♪", "♫",
-        "şarkı", "sarki", "müzik sesi", "fon müziği", "altyazı", "altyazi"
+        "şarkı", "sarki", "müzik sesi", "fon müziği", "altyazı", "altyazi",
+        "video", "görsel", "gorsel", "diyalog"
     )
 
     fun isMusicOrEmptyTranscript(raw: String): Boolean {
@@ -92,7 +93,9 @@ object OnlineAiAnalyzer {
             .lowercase()
             .trim('.', ',', '!', '?', '-', '_', '[', ']', '(', ')', '♪', '♫', ' ')
         if (clean.isBlank()) return true
-        return clean in musicOnlyOutputs
+        if (clean in musicOnlyOutputs) return true
+        if (clean.contains("şarkı sözleri") && clean.contains("diyalog")) return true
+        return false
     }
 
     private fun cleanWhisperText(raw: String): String {
@@ -101,19 +104,11 @@ object OnlineAiAnalyzer {
         if (isMusicOrEmptyTranscript(trimmed)) return ""
         val lower = trimmed.lowercase()
         for (h in whisperHallucinations) {
-            if (lower.contains(h) && trimmed.length < 48) return ""
+            if (lower.contains(h) && trimmed.length < 60) return ""
         }
         return VideoIndexer.autoCorrectTurkishReplik(trimmed)
     }
 
-    /**
-     * Videoyu hem Ses Ajanı (Whisper Large v3 Turbo - sıkıştırılmış AAC veya hafif WAV)
-     * hem de Görsel/Altyazı Ajanı (Qwen 3.8 27B Vision 2x2 Kolaj) ile analiz eder.
-     * Ücretsiz TPM kotasını korumak için:
-     * - Eğer yerel OCR zaten net altyazı bulduysa ve Whisper da net replik bulduysa,
-     *   gereksiz Vision çağrısı yapmadan yerel OCR + Whisper'ı birleştirir.
-     * - Eğer konuşma zayıfsa/müzikse veya altyazı eksikse/kısa ise Vision ajanını çağırır.
-     */
     suspend fun analyzeVideoWithAi(
         context: Context,
         videoFile: File,
@@ -124,7 +119,6 @@ object OnlineAiAnalyzer {
         if (!isOnline(context)) return@withContext null
         val apiKey = getApiKey(context)
 
-        // 1. Ajan: İlk 12 saniyeyi sıkıştırılmış AAC (~25 KB) olarak göndermeyi dene (%95 veri tasarrufu!)
         var whisperTranscript = ""
         val aacBytes = indexer.extractCompressedAacForAi(videoFile, maxSeconds = 12)
         if (aacBytes.size > 1200) {
@@ -137,44 +131,50 @@ object OnlineAiAnalyzer {
             }
         }
 
+        // Mantık & Düzeltme Ajanı: Whisper veya yerel OCR metni bozuk/uydurma kelimeler içeriyorsa
+        // hızlı metin ajanı ile Türkçe bağlama göre düzelt ve Instagram/sayfa çöplerini ayıkla!
+        if (whisperTranscript.isNotBlank() || localOcrHint.isNotBlank()) {
+            val refined = refineWithTextLogicAgent(apiKey, whisperTranscript, localOcrHint)
+            if (refined != null) {
+                val rSpoken = refined.first
+                val rScreen = VideoIndexer.filterWatermarks(refined.second)
+                if (rSpoken.isNotBlank() || rScreen.isNotBlank()) {
+                    whisperTranscript = rSpoken
+                    if (!forceVision && (rSpoken.isNotBlank() && !VideoIndexer.isWeakSpokenFiller(rSpoken))) {
+                        return@withContext AiMediaResult(
+                            spokenText = rSpoken,
+                            screenText = rScreen.ifBlank { localOcrHint },
+                            visualLabels = "",
+                            durationMs = 0L
+                        )
+                    }
+                }
+            }
+        }
+
         val hasStrongSpeech = whisperTranscript.isNotBlank() &&
             !isMusicOrEmptyTranscript(whisperTranscript) &&
             !VideoIndexer.isWeakSpokenFiller(whisperTranscript)
 
-        val hasStrongLocalOcr = localOcrHint.length >= 10
-
-        // Kota Koruyucu Akıllı Karar:
-        // Hem konuşma çok netse hem de yerel OCR altyazıyı zaten okuduysa (ve tekil zorunlu AI çağrısı değilse),
-        // Vision kotasını (8K TPM) harcamadan ikisini birleştir!
-        if (!forceVision && hasStrongSpeech && hasStrongLocalOcr) {
-            return@withContext AiMediaResult(
-                spokenText = whisperTranscript,
-                screenText = localOcrHint,
-                visualLabels = "",
-                durationMs = 0L
-            )
-        }
-
-        // 2. Ajan: 4 farklı saniyeden 2x2 kare kolajı oluştur ve Qwen 3.8 27B Vision'a gönder
         val (durationMs, collageBase64) = buildVideoFourFrameCollageBase64(videoFile)
         var visionSpoken = ""
         var visionSubtitle = ""
         var visionScene = ""
 
-        if (collageBase64.isNotEmpty() && (forceVision || !hasStrongSpeech || localOcrHint.isBlank())) {
+        if (collageBase64.isNotEmpty() && (forceVision || !hasStrongSpeech)) {
             val prompt = buildString {
-                append("Bu görsel bir Türk meme veya müzik videosunun 4 farklı saniyesinden (sol üst, sağ üst, sol alt, sağ alt) alınmış 2x2 kare kolajıdır.\n")
+                append("Bu görsel bir Türk meme veya müzik videosunun 4 farklı saniyesinden alınmış 2x2 kare kolajıdır.\n")
                 if (whisperTranscript.isNotBlank()) {
                     append("Ses Ajanının duyduğu sözler: \"$whisperTranscript\"\n")
                 }
                 if (localOcrHint.isNotBlank()) {
-                    append("Ön OCR ipucu: \"$localOcrHint\"\n")
+                    append("Ön OCR metni: \"$localOcrHint\"\n")
                 }
                 append("Görevlerin:\n")
-                append("1. Karelerin üzerindeki altyazıları veya sonradan eklenmiş ekran yazılarını (kelime kelime akan karaoke şarkı sözleri dahil; Instagram/TikTok sayfa adı veya TV logosu hariç) birleştirip tam Türkçe cümle olarak 'subtitle' alanına yaz.\n")
-                append("2. Ses Ajanının duyduğu sözlerde yanlış anlaşılmış kelime varsa altyazıya göre düzeltip en doğru repliği 'spoken' alanına yaz (sadece müzik varsa boş bırak).\n")
-                append("3. Görseldeki sahneyi, ünlü kişiyi (varsa), olayı veya mizahı Türkçe 3-6 kelimeyle 'scene' alanına yaz.\n")
-                append("SADECE geçerli bir JSON döndür, başka hiçbir açıklama veya düşünce yazma:\n")
+                append("1. Karelerin üzerindeki anlamlı Türkçe altyazıları veya ekran yazılarını (Instagram/TikTok kullanıcı adı, '@hesap', TV logosu HARİÇ) tam Türkçe cümle olarak 'subtitle' alanına yaz.\n")
+                append("2. Ses Ajanının duyduğu sözlerde yanlış/anlamsız kelime varsa altyazıya ve Türkçe mantığa göre düzeltip 'spoken' alanına yaz (sadece müzik/sessizlik varsa boş bırak).\n")
+                append("3. Görseldeki sahneyi, ünlü kişiyi veya olayı Türkçe 3-6 kelimeyle 'scene' alanına yaz.\n")
+                append("SADECE geçerli bir JSON döndür:\n")
                 append("{\"spoken\":\"...\",\"subtitle\":\"...\",\"scene\":\"...\"}")
             }
             val parsed = callGroqVisionJson(apiKey, collageBase64, prompt)
@@ -193,9 +193,8 @@ object OnlineAiAnalyzer {
         }
 
         val finalScreen = when {
-            visionSubtitle.length >= localOcrHint.length && visionSubtitle.isNotBlank() -> visionSubtitle
-            localOcrHint.isNotBlank() -> localOcrHint
-            else -> visionSubtitle
+            visionSubtitle.isNotBlank() -> visionSubtitle
+            else -> localOcrHint
         }
 
         val finalScene = if (visionScene.isNotBlank()) "🏷️ $visionScene" else ""
@@ -213,9 +212,75 @@ object OnlineAiAnalyzer {
     }
 
     /**
-     * Fotoğrafı / Ekran görüntüsünü Görsel & Mizah Ajanı (Qwen 3.8 27B Vision) ile analiz eder.
-     * Hem içindeki tüm yazıları okur hem de fotoğrafın ne olduğunu Türkçe olarak açıklar.
+     * Mantık & Düzeltme Ajanı:
+     * Whisper veya OCR'dan gelen "tahvimler", "Braten", "OlmikzSzesler", "BDAMLADILA", "6GALERIKKOO"
+     * gibi bozuk kelimeleri ve Instagram hesap adlarını Türkçe dil mantığıyla temizler/düzeltir.
      */
+    suspend fun refineWithTextLogicAgent(
+        apiKey: String,
+        rawSpoken: String,
+        rawScreen: String
+    ): Pair<String, String>? {
+        if (rawSpoken.isBlank() && rawScreen.isBlank()) return null
+        val prompt = buildString {
+            append("Sen Türkçe meme/video metin düzeltme uzmanısın. Aşağıdaki ses ve ekran yazılarındaki:\n")
+            append("- Fonetik/OCR yazım hatalarını Türkçe mantığa göre düzelt (ör: 'tahvimler'->'takvimler', 'burda'->'burada').\n")
+            append("- Anlamsız harf yığınlarını ('OlmikzSzesler', 'GOKSJXKCJ', 'Braten', 'Therapy richest') ve Instagram/TikTok sayfa/hesap adlarını ('BDAMLADILA', '6GALERIKKOO', 'KRALINYGARŞIV', '@hesap') TAMAMEN SİL.\n")
+            append("- Cümle mantıklıysa anlamını bozma, sadece hatalı kelimeleri düzelt.\n")
+            append("Ses: \"$rawSpoken\"\n")
+            append("Ekran: \"$rawScreen\"\n")
+            append("SADECE JSON döndür: {\"spoken\":\"...\",\"screen\":\"...\"}")
+        }
+
+        var conn: HttpURLConnection? = null
+        try {
+            val url = URL("https://api.groq.com/openai/v1/chat/completions")
+            conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                connectTimeout = 8000
+                readTimeout = 12000
+                setRequestProperty("Authorization", "Bearer $apiKey")
+                setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+            }
+
+            val bodyJson = JSONObject().apply {
+                put("model", "openai/gpt-oss-20b")
+                put("temperature", 0.0)
+                put("max_completion_tokens", 180)
+                put("response_format", JSONObject().apply { put("type", "json_object") })
+                put("messages", JSONArray().apply {
+                    put(JSONObject().apply {
+                        put("role", "user")
+                        put("content", prompt)
+                    })
+                })
+            }
+
+            conn.outputStream.use { os ->
+                os.write(bodyJson.toString().toByteArray(Charsets.UTF_8))
+            }
+
+            if (conn.responseCode == 200) {
+                val resp = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                val content = JSONObject(resp).optJSONArray("choices")
+                    ?.optJSONObject(0)
+                    ?.optJSONObject("message")
+                    ?.optString("content", "") ?: ""
+                val parsed = extractJsonFromText(content)
+                if (parsed != null) {
+                    val s = cleanWhisperText(parsed.optString("spoken", ""))
+                    val sc = VideoIndexer.filterWatermarks(parsed.optString("screen", ""))
+                    return Pair(s, sc)
+                }
+            }
+        } catch (_: Exception) {
+        } finally {
+            try { conn?.disconnect() } catch (_: Exception) {}
+        }
+        return null
+    }
+
     suspend fun analyzeImageWithAi(
         context: Context,
         imageFile: File,
@@ -233,8 +298,8 @@ object OnlineAiAnalyzer {
                 append("Görseldeki olası yazı ipucu: \"$localOcrHint\"\n")
             }
             append("1. Fotoğrafın içinde anlamlı bir yazı, mesajlaşma, tweet, başlık veya altyazı varsa düzgün Türkçe metnini 'subtitle' alanına yaz (filigran/sayfa adı hariç).\n")
-            append("2. Fotoğrafta ne göründüğünü, ortamı, kişileri, nesneleri veya mizahı (ör: 'tiyatro salonunda kalabalık grup fotoğrafı', 'parkta çimlerde oturan öğrenciler', 'whatsapp ders seçimi mesajlaşması', 'tarlada otlayan inekler') 3-8 Türkçe kelimeyle 'scene' alanına yaz.\n")
-            append("SADECE geçerli bir JSON döndür, başka açıklama yazma:\n")
+            append("2. Fotoğrafta ne göründüğünü, ortamı, kişileri, nesneleri veya mizahı 3-8 Türkçe kelimeyle 'scene' alanına yaz.\n")
+            append("SADECE geçerli bir JSON döndür:\n")
             append("{\"subtitle\":\"...\",\"scene\":\"...\"}")
         }
 
@@ -285,7 +350,8 @@ object OnlineAiAnalyzer {
                     writeField("language", "tr")
                     writeField("response_format", "verbose_json")
                     writeField("temperature", "0.0")
-                    writeField("prompt", "Türkçe video repliği, diyalog ve konuşma.")
+                    // NOT: "prompt" alanı sessiz videolarda Whisper'ın kendi promptunu halüsinasyon olarak
+                    // döndürmesine ("Şarkı sözleri, rap ve diyalog.") yol açtığı için kaldırılmıştır!
 
                     out.writeBytes("--$boundary\r\n")
                     out.writeBytes("Content-Disposition: form-data; name=\"file\"; filename=\"$fileName\"\r\n")
@@ -301,7 +367,6 @@ object OnlineAiAnalyzer {
                     val resp = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
                     val json = JSONObject(resp)
 
-                    // verbose_json segment analizi: Sadece yüksek olasılıkla gerçek konuşma olan segmentleri al!
                     val segments = json.optJSONArray("segments")
                     if (segments != null && segments.length() > 0) {
                         val validParts = mutableListOf<String>()
@@ -309,8 +374,7 @@ object OnlineAiAnalyzer {
                             val seg = segments.optJSONObject(i) ?: continue
                             val noSpeechProb = seg.optDouble("no_speech_prob", 0.0)
                             val segText = seg.optString("text", "").trim()
-                            // no_speech_prob > 0.78 ise ve tek kelimelik "Müzik" vb. ise atla
-                            if (noSpeechProb > 0.82 && segText.length < 15) continue
+                            if (noSpeechProb > 0.65 && segText.length < 22) continue
                             if (!isMusicOrEmptyTranscript(segText)) {
                                 validParts.add(segText)
                             }
@@ -449,7 +513,6 @@ object OnlineAiAnalyzer {
                         val retrySec = conn.getHeaderField("retry-after")?.toLongOrNull() ?: (4L * attempt)
                         delay((retrySec.coerceIn(2L, 14L)) * 1000L)
                     } else {
-                        // Bu model desteklenmiyorsa (400/404) bir sonraki Vision modeline geç
                         break
                     }
                 } catch (_: Exception) {
@@ -463,7 +526,6 @@ object OnlineAiAnalyzer {
     }
 
     private fun extractJsonFromText(text: String): JSONObject? {
-        // Qwen modelleri bazen <think>...</think> bloğu döndürebilir; önce onu temizle
         val withoutThink = text.replace(Regex("<think>[\\s\\S]*?</think>", RegexOption.IGNORE_CASE), "").trim()
         val start = withoutThink.indexOf('{')
         val end = withoutThink.lastIndexOf('}')
@@ -492,7 +554,6 @@ object OnlineAiAnalyzer {
                 (effectiveDurUs * 0.86).toLong()
             )
             for (t in timesUs) {
-                // OPTION_CLOSEST ile tam o saniyedeki altyazı karesini yakala (boş ise CLOSEST_SYNC yedek)
                 val bmp = retriever.getFrameAtTime(t, MediaMetadataRetriever.OPTION_CLOSEST)
                     ?: retriever.getFrameAtTime(t, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 if (bmp != null) frames.add(bmp)
