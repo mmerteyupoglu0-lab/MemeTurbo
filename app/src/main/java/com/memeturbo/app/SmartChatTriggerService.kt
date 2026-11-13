@@ -29,6 +29,7 @@ class SmartChatTriggerService : AccessibilityService() {
 
     private lateinit var windowManager: WindowManager
     private var searchPanelView: View? = null
+    private var overlayVideoViewRef: VideoView? = null
     private var currentChatPackage: String? = null
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
@@ -63,18 +64,16 @@ class SmartChatTriggerService : AccessibilityService() {
 
         currentChatPackage = pkg
 
-        val type = event.eventType
-        if (type == AccessibilityEvent.TYPE_VIEW_CLICKED || type == AccessibilityEvent.TYPE_VIEW_FOCUSED) {
-            val source = event.source
+        // Sadece tıklama olaylarını dinle; her odak değişiminde event.source IPC çağrısı yaparak WhatsApp'ı yorma!
+        if (event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
             val clsName = event.className?.toString() ?: ""
-            val isInput = source?.isEditable == true ||
-                clsName.contains("EditText", ignoreCase = true) ||
+            val isInputByClass = clsName.contains("EditText", ignoreCase = true) ||
                 clsName.contains("AutoComplete", ignoreCase = true)
+            val isInput = isInputByClass || (try { event.source?.isEditable == true } catch (_: Exception) { false })
 
             if (isInput) {
                 val now = System.currentTimeMillis()
-                // İlk odaklanma veya tıklamadan sonra 850ms içinde ikinci tıklama gelirse paneli aç!
-                if (type == AccessibilityEvent.TYPE_VIEW_CLICKED && now - lastClickTime in 50..850) {
+                if (now - lastClickTime in 50..850) {
                     showGameTurboSearchPanel()
                     lastClickTime = 0L
                 } else {
@@ -217,6 +216,7 @@ class SmartChatTriggerService : AccessibilityService() {
             }
         }
         videoViewRef = videoView
+        overlayVideoViewRef = videoView
         previewBox.addView(videoView)
         container.addView(previewBox)
 
@@ -225,7 +225,7 @@ class SmartChatTriggerService : AccessibilityService() {
             layoutManager = gridLayoutManager
             setHasFixedSize(true)
             itemAnimator = null
-            setItemViewCacheSize(24)
+            setItemViewCacheSize(16)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 dpToPx(310f)
@@ -258,14 +258,18 @@ class SmartChatTriggerService : AccessibilityService() {
         container.addView(recyclerView)
 
         val db = MemeDatabase.getInstance(this).memeDao()
-
+        var overlayCachedMemes: List<MemeVideo>? = null
         var searchJob: Job? = null
+
         fun refreshOverlayList(query: String, immediate: Boolean = false) {
             searchJob?.cancel()
             searchJob = serviceScope.launch {
-                if (!immediate && query.isNotEmpty()) delay(60)
-                val results = withContext(Dispatchers.IO) {
-                    val all = db.getAllMemes()
+                if (!immediate && query.isNotEmpty()) delay(110)
+                val all = overlayCachedMemes ?: withContext(Dispatchers.IO) {
+                    db.getAllMemes()
+                }.also { overlayCachedMemes = it }
+
+                val results = withContext(Dispatchers.Default) {
                     val albumFiltered = if (selectedOverlayAlbum == null) {
                         all
                     } else {
@@ -337,7 +341,7 @@ class SmartChatTriggerService : AccessibilityService() {
         searchInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                refreshOverlayList(s?.toString()?.trim() ?: "", immediate = true)
+                refreshOverlayList(s?.toString()?.trim() ?: "", immediate = false)
             }
             override fun afterTextChanged(s: Editable?) {}
         })
@@ -358,11 +362,17 @@ class SmartChatTriggerService : AccessibilityService() {
         }
 
         searchPanelView = container
-        windowManager.addView(container, params)
-        searchInput.requestFocus()
+        try {
+            windowManager.addView(container, params)
+            searchInput.requestFocus()
+        } catch (_: Exception) {
+            searchPanelView = null
+        }
     }
 
     private fun closeSearchPanel() {
+        try { overlayVideoViewRef?.stopPlayback() } catch (_: Exception) {}
+        overlayVideoViewRef = null
         searchPanelView?.let {
             try {
                 windowManager.removeView(it)
@@ -388,8 +398,8 @@ class SmartChatTriggerService : AccessibilityService() {
 
             serviceScope.launch {
                 delay(200)
-                val focusedInput = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-                val pasted = focusedInput?.performAction(AccessibilityNodeInfo.ACTION_PASTE) == true
+                val focusedInput = try { rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) } catch (_: Exception) { null }
+                val pasted = try { focusedInput?.performAction(AccessibilityNodeInfo.ACTION_PASTE) == true } catch (_: Exception) { false }
                 if (!pasted) {
                     launchShareIntent(mime, uri)
                 }
@@ -423,6 +433,7 @@ class SmartChatTriggerService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        closeSearchPanel()
         serviceScope.cancel()
     }
 }

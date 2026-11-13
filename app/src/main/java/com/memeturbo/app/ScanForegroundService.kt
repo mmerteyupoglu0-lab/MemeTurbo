@@ -259,7 +259,6 @@ class ScanForegroundService : Service() {
             val ocrCheckedSet = prefs.getStringSet("ocr_checked_paths", emptySet())?.toMutableSet() ?: mutableSetOf()
             try {
                 stateFlow.value = ScanState(isRunning = true, statusMessage = "🌐 AI çözümleme listesi hazırlanıyor...")
-                indexer.cleanExistingDatabaseRecords()
 
                 val onlineAvailable = OnlineAiAnalyzer.isOnline(this@ScanForegroundService)
                 val model = if (!onlineAvailable) ensureVoskModel(indexer) else voskModel
@@ -270,10 +269,6 @@ class ScanForegroundService : Service() {
                     if (albumInfo.isAll) list else list.filter { it.albumName == albumInfo.name }
                 }
 
-                // V13.0 Akıllı Seçim:
-                // - Elle (✏️) düzenlediklerine ASLA dokunma.
-                // - Konuşması zaten iyi olan VE daha önce altyazı kontrolü yapılmış (ocrCheckedSet) videolara TEKRAR dokunma!
-                // - Sadece gerçekten konuşması/yazısı zayıf, "Müzik" veya mantıksız kalmış olanları seç!
                 val targetItems = allItems.filter { item ->
                     if (item.filePath in editedPaths) return@filter false
                     if (forceFullAlbum) return@filter true
@@ -296,7 +291,7 @@ class ScanForegroundService : Service() {
                         }
                     } else {
                         val hasAiPhotoScene = visual.startsWith("🖼️")
-                        screen.isBlank() && !hasAiPhotoScene
+                        !hasAiPhotoScene
                     }
                 }
 
@@ -319,7 +314,7 @@ class ScanForegroundService : Service() {
                     val file = File(item.filePath)
                     val curNum = idx + 1
                     val shortName = VideoIndexer.cleanFileNameForDisplay(item.fileName).ifEmpty { item.fileName.take(20) }
-                    val modeTag = if (OnlineAiAnalyzer.isOnline(this@ScanForegroundService)) "🌐 AI+Mantık" else "🔧 Çevrimdışı"
+                    val modeTag = if (OnlineAiAnalyzer.isOnline(this@ScanForegroundService)) "🌐 AI+Görsel" else "🔧 Çevrimdışı"
                     val msg = "$modeTag ($curNum/$total): $shortName"
 
                     stateFlow.value = stateFlow.value.copy(
@@ -328,7 +323,7 @@ class ScanForegroundService : Service() {
                         total = total,
                         statusMessage = msg
                     )
-                    if (curNum == 1 || curNum % 5 == 0) {
+                    if (curNum == 1 || curNum % 4 == 0) {
                         updateNotification(msg)
                     }
 
@@ -384,7 +379,7 @@ class ScanForegroundService : Service() {
                         }
                     }
 
-                    if (curNum % 20 == 0) {
+                    if (curNum % 10 == 0) {
                         prefs.edit().putStringSet("ocr_checked_paths", ocrCheckedSet).apply()
                         stateFlow.value = stateFlow.value.copy(refreshTick = stateFlow.value.refreshTick + 1)
                     }
@@ -394,7 +389,7 @@ class ScanForegroundService : Service() {
                 prefs.edit().putStringSet("ocr_checked_paths", ocrCheckedSet).apply()
                 stateFlow.value = ScanState(
                     isRunning = false,
-                    statusMessage = "✅ $total medya AI + Mantık Süzgeci ile güncellendi!",
+                    statusMessage = "✅ $total medya AI + Görsel Tanıma ile güncellendi!",
                     refreshTick = stateFlow.value.refreshTick + 1
                 )
             } catch (_: CancellationException) {

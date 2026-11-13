@@ -25,11 +25,10 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * V13.0 Çoklu Ajan (Multi-Agent) Çevrimiçi Yapay Zeka Analiz Motoru:
- * - 1. Ajan (Ses Ajanı): Groq Whisper Large v3 Turbo (prompt sızıntısız + ADTS AAC sıkıştırmalı)
- * - 2. Ajan (Mantık & Düzeltme Ajanı): Groq GPT-OSS 20B / Llama 3.1 8B ile Whisper ve OCR'daki
- *   mantıksız kelimeleri ("tahvimler" -> "takvimler", "Braten" -> sil) Türkçe bağlama göre düzeltir.
- * - 3. Ajan (Görsel & Altyazı Ajanı): Groq Qwen 3.8 27B Vision ile fotoğrafları ve eksik altyazıları betimler.
+ * V14.0 Çoklu Ajan (Multi-Agent) Çevrimiçi Yapay Zeka Analiz Motoru:
+ * - Fotoğraflarda: Yapı, eşya, yiyecek, doğa (gün batımı, çiçek), video oyunu (Bannerlord, LoL, Minecraft vb.)
+ *   ve kullanıcının tanıttığı referans kişi fotoğrafı ("Mert / Ben" veya arkadaş) eşleştirmesi!
+ * - Videolarda: ADTS AAC ses + GPT-OSS 20B Mantık Düzeltme Ajanı + Qwen 3.8 27B Vision.
  */
 object OnlineAiAnalyzer {
 
@@ -131,8 +130,6 @@ object OnlineAiAnalyzer {
             }
         }
 
-        // Mantık & Düzeltme Ajanı: Whisper veya yerel OCR metni bozuk/uydurma kelimeler içeriyorsa
-        // hızlı metin ajanı ile Türkçe bağlama göre düzelt ve Instagram/sayfa çöplerini ayıkla!
         if (whisperTranscript.isNotBlank() || localOcrHint.isNotBlank()) {
             val refined = refineWithTextLogicAgent(apiKey, whisperTranscript, localOcrHint)
             if (refined != null) {
@@ -173,11 +170,11 @@ object OnlineAiAnalyzer {
                 append("Görevlerin:\n")
                 append("1. Karelerin üzerindeki anlamlı Türkçe altyazıları veya ekran yazılarını (Instagram/TikTok kullanıcı adı, '@hesap', TV logosu HARİÇ) tam Türkçe cümle olarak 'subtitle' alanına yaz.\n")
                 append("2. Ses Ajanının duyduğu sözlerde yanlış/anlamsız kelime varsa altyazıya ve Türkçe mantığa göre düzeltip 'spoken' alanına yaz (sadece müzik/sessizlik varsa boş bırak).\n")
-                append("3. Görseldeki sahneyi, ünlü kişiyi veya olayı Türkçe 3-6 kelimeyle 'scene' alanına yaz.\n")
+                append("3. Görseldeki sahneyi, ünlü kişiyi, video oyununu veya olayı Türkçe 3-6 kelimeyle 'scene' alanına yaz.\n")
                 append("SADECE geçerli bir JSON döndür:\n")
                 append("{\"spoken\":\"...\",\"subtitle\":\"...\",\"scene\":\"...\"}")
             }
-            val parsed = callGroqVisionJson(apiKey, collageBase64, prompt)
+            val parsed = callGroqVisionJson(apiKey, listOf(collageBase64), prompt)
             if (parsed != null) {
                 visionSpoken = parsed.optString("spoken", "").trim()
                 visionSubtitle = VideoIndexer.filterWatermarks(parsed.optString("subtitle", "").trim())
@@ -192,11 +189,7 @@ object OnlineAiAnalyzer {
             else -> ""
         }
 
-        val finalScreen = when {
-            visionSubtitle.isNotBlank() -> visionSubtitle
-            else -> localOcrHint
-        }
-
+        val finalScreen = if (visionSubtitle.isNotBlank()) visionSubtitle else localOcrHint
         val finalScene = if (visionScene.isNotBlank()) "🏷️ $visionScene" else ""
 
         if (finalSpoken.isBlank() && finalScreen.isBlank() && finalScene.isBlank()) {
@@ -211,11 +204,6 @@ object OnlineAiAnalyzer {
         )
     }
 
-    /**
-     * Mantık & Düzeltme Ajanı:
-     * Whisper veya OCR'dan gelen "tahvimler", "Braten", "OlmikzSzesler", "BDAMLADILA", "6GALERIKKOO"
-     * gibi bozuk kelimeleri ve Instagram hesap adlarını Türkçe dil mantığıyla temizler/düzeltir.
-     */
     suspend fun refineWithTextLogicAgent(
         apiKey: String,
         rawSpoken: String,
@@ -281,6 +269,13 @@ object OnlineAiAnalyzer {
         return null
     }
 
+    /**
+     * V14.0 Gelişmiş Fotoğraf & Kişi Tanıma Motoru:
+     * - Kullanıcının tanıttığı referans kişi ("Mert / Ben") fotoğrafı varsa 2. görsel olarak ekler
+     *   ve "Mert ve arkadaşları..." şeklinde etiketler.
+     * - Yapı (cami, yurt, konferans salonu), yiyecek, doğa (gün batımı, çiçek), eşya ve video oyunu
+     *   (Bannerlord, LoL, Minecraft vb.) tespiti yapar.
+     */
     suspend fun analyzeImageWithAi(
         context: Context,
         imageFile: File,
@@ -289,21 +284,41 @@ object OnlineAiAnalyzer {
         if (!isOnline(context)) return@withContext null
         val apiKey = getApiKey(context)
 
-        val base64Jpeg = encodeImageFileToBase64Jpeg(imageFile, maxDim = 640)
-        if (base64Jpeg.isEmpty()) return@withContext null
+        val targetBase64 = encodeImageFileToBase64Jpeg(imageFile, maxDim = 640)
+        if (targetBase64.isEmpty()) return@withContext null
+
+        val prefs = context.getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+        val selfName = prefs.getString("self_person_name", "")?.trim() ?: ""
+        val selfPhotoPath = prefs.getString("self_person_photo", "")?.trim() ?: ""
+        var refBase64 = ""
+        if (selfName.isNotBlank() && selfPhotoPath.isNotBlank()) {
+            val refFile = File(selfPhotoPath)
+            if (refFile.exists() && refFile.absolutePath != imageFile.absolutePath) {
+                refBase64 = encodeImageFileToBase64Jpeg(refFile, maxDim = 420)
+            }
+        }
+
+        val imagesList = if (refBase64.isNotEmpty()) listOf(targetBase64, refBase64) else listOf(targetBase64)
 
         val prompt = buildString {
-            append("Bu fotoğrafı Türkçe galeri araması için analiz et:\n")
+            if (refBase64.isNotEmpty()) {
+                append("1. görsel analiz edilecek ana fotoğraftır. 2. görsel ise '$selfName' (Ben) adlı kişinin referans fotoğrafıdır.\n")
+            } else {
+                append("Bu fotoğrafı Türkçe galeri araması için detaylı analiz et:\n")
+            }
             if (localOcrHint.isNotBlank()) {
                 append("Görseldeki olası yazı ipucu: \"$localOcrHint\"\n")
             }
-            append("1. Fotoğrafın içinde anlamlı bir yazı, mesajlaşma, tweet, başlık veya altyazı varsa düzgün Türkçe metnini 'subtitle' alanına yaz (filigran/sayfa adı hariç).\n")
-            append("2. Fotoğrafta ne göründüğünü, ortamı, kişileri, nesneleri veya mizahı 3-8 Türkçe kelimeyle 'scene' alanına yaz.\n")
+            append("1. Ana fotoğrafta anlamlı yazı, mesajlaşma, tweet, başlık veya tahta yazısı varsa düzgün Türkçe metnini 'subtitle' alanına yaz (filigran/sayfa adı hariç; yoksa boş bırak).\n")
+            append("2. Ana fotoğraftaki ortamı, yapıyı (cami, tiyatro salonu, park, yurt odası), nesneyi, yiyeceği, doğayı (gün batımı, çiçek, deniz), video oyununu (Bannerlord, LoL, Minecraft, GTA, ETS2 vb.) ve kişileri 4-9 Türkçe kelimeyle 'scene' alanına yaz.\n")
+            if (refBase64.isNotEmpty()) {
+                append("3. ÖNEMLİ: 2. görseldeki '$selfName' adlı kişi 1. görselde de görünüyorsa açıklamaya mutlaka '$selfName' (ör: '$selfName ve arkadaşları parkta', '$selfName özçekimi') adını ekle!\n")
+            }
             append("SADECE geçerli bir JSON döndür:\n")
             append("{\"subtitle\":\"...\",\"scene\":\"...\"}")
         }
 
-        val parsed = callGroqVisionJson(apiKey, base64Jpeg, prompt) ?: return@withContext null
+        val parsed = callGroqVisionJson(apiKey, imagesList, prompt) ?: return@withContext null
         val aiSubtitle = VideoIndexer.filterWatermarks(parsed.optString("subtitle", "").trim())
         val scene = parsed.optString("scene", "").trim()
 
@@ -350,8 +365,6 @@ object OnlineAiAnalyzer {
                     writeField("language", "tr")
                     writeField("response_format", "verbose_json")
                     writeField("temperature", "0.0")
-                    // NOT: "prompt" alanı sessiz videolarda Whisper'ın kendi promptunu halüsinasyon olarak
-                    // döndürmesine ("Şarkı sözleri, rap ve diyalog.") yol açtığı için kaldırılmıştır!
 
                     out.writeBytes("--$boundary\r\n")
                     out.writeBytes("Content-Disposition: form-data; name=\"file\"; filename=\"$fileName\"\r\n")
@@ -450,10 +463,10 @@ object OnlineAiAnalyzer {
         return defaultModels
     }
 
-    private suspend fun callGroqVisionJson(apiKey: String, base64Jpeg: String, prompt: String): JSONObject? {
+    private suspend fun callGroqVisionJson(apiKey: String, base64JpegList: List<String>, prompt: String): JSONObject? {
         val models = resolveActiveVisionModels(apiKey)
         for (modelName in models) {
-            for (attempt in 1..2) {
+            for (attempt in 1..3) {
                 var conn: HttpURLConnection? = null
                 try {
                     val url = URL("https://api.groq.com/openai/v1/chat/completions")
@@ -461,7 +474,7 @@ object OnlineAiAnalyzer {
                         requestMethod = "POST"
                         doOutput = true
                         connectTimeout = 15000
-                        readTimeout = 28000
+                        readTimeout = 30000
                         setRequestProperty("Authorization", "Bearer $apiKey")
                         setRequestProperty("Content-Type", "application/json; charset=UTF-8")
                     }
@@ -471,12 +484,14 @@ object OnlineAiAnalyzer {
                             put("type", "text")
                             put("text", prompt)
                         })
-                        put(JSONObject().apply {
-                            put("type", "image_url")
-                            put("image_url", JSONObject().apply {
-                                put("url", "data:image/jpeg;base64,$base64Jpeg")
+                        for (b64 in base64JpegList.take(3)) {
+                            put(JSONObject().apply {
+                                put("type", "image_url")
+                                put("image_url", JSONObject().apply {
+                                    put("url", "data:image/jpeg;base64,$b64")
+                                })
                             })
-                        })
+                        }
                     }
 
                     val bodyJson = JSONObject().apply {
@@ -510,13 +525,13 @@ object OnlineAiAnalyzer {
                         if (parsed != null) return parsed
                         break
                     } else if (code == 429) {
-                        val retrySec = conn.getHeaderField("retry-after")?.toLongOrNull() ?: (4L * attempt)
-                        delay((retrySec.coerceIn(2L, 14L)) * 1000L)
+                        val retrySec = conn.getHeaderField("retry-after")?.toLongOrNull() ?: (12L * attempt)
+                        delay((retrySec.coerceIn(4L, 35L)) * 1000L)
                     } else {
                         break
                     }
                 } catch (_: Exception) {
-                    delay(900L)
+                    delay(1000L)
                 } finally {
                     try { conn?.disconnect() } catch (_: Exception) {}
                 }

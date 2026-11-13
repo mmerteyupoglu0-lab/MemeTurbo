@@ -24,6 +24,7 @@ import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -40,6 +41,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 import kotlin.math.abs
 
 class MainActivity : AppCompatActivity() {
@@ -56,6 +58,7 @@ class MainActivity : AppCompatActivity() {
     private var currentFilter = 0
     private var selectedAlbumFilter: String? = null
     private var searchJob: Job? = null
+    private var photoAutoAdvanceJob: Job? = null
     private var lastObservedTick = -1
     private var cachedAllMemes: List<MemeVideo>? = null
     private var currentFilteredList: List<MemeVideo> = emptyList()
@@ -79,6 +82,37 @@ class MainActivity : AppCompatActivity() {
     private var currentPreviewMeme: MemeVideo? = null
     private var currentPreviewIndex: Int = -1
     private var isSequentialPlayEnabled: Boolean = false
+    private var pendingPersonName: String = ""
+
+    private val pickSelfPhotoLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null && pendingPersonName.isNotBlank()) {
+            lifecycleScope.launch {
+                val savedPath = withContext(Dispatchers.IO) {
+                    try {
+                        val dest = File(filesDir, "self_person_ref.jpg")
+                        contentResolver.openInputStream(uri)?.use { input ->
+                            FileOutputStream(dest).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                        dest.absolutePath
+                    } catch (_: Exception) { "" }
+                }
+                if (savedPath.isNotBlank()) {
+                    getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+                        .edit()
+                        .putString("self_person_name", pendingPersonName)
+                        .putString("self_person_photo", savedPath)
+                        .apply()
+                    Toast.makeText(
+                        this@MainActivity,
+                        "✅ '$pendingPersonName' kaydedildi! Fotoğraf taramalarında tanınacak.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -98,13 +132,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         val title = TextView(this).apply {
-            text = "⚡ ReplikBul • MemeTurbo V13"
+            text = "⚡ ReplikBul • MemeTurbo V14"
             textSize = 20f
             setTextColor(Color.WHITE)
         }
 
         val privacyBanner = TextView(this).apply {
-            text = "🚀 V13 Akıllı Motor: Çift Tık Onarıldı • Mantık Düzeltme Ajanı • Sağa/Sola Sekme Kaydırma • Sırayla Oynatma\n🔍 'istesende' veya 'burda' gibi yazım hatalarını da otomatik bulur."
+            text = "🚀 V14 Turbo: 10x Hızlı Arama • Sıfır Donma • Fotoğrafta Kişi/Oyun/Mekân Tanıma • 3sn Sıralı Fotoğraf Geçişi"
             textSize = 11.5f
             setTextColor(Color.parseColor("#38BDF8"))
             setPadding(0, dpToPx(6f), 0, dpToPx(8f))
@@ -120,7 +154,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val overlayCheck = Button(this).apply {
-            text = "1. Yüzen İzin"
+            text = "1. Yüzen"
             textSize = 11f
             setTextColor(Color.WHITE)
             isAllCaps = false
@@ -128,7 +162,7 @@ class MainActivity : AppCompatActivity() {
                 cornerRadius = dpToPx(12f).toFloat()
                 setColor(if (Settings.canDrawOverlays(this@MainActivity)) Color.parseColor("#16A34A") else Color.parseColor("#0284C7"))
             }
-            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34f), 1f).apply { rightMargin = dpToPx(6f) }
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34f), 1f).apply { rightMargin = dpToPx(5f) }
             setOnClickListener {
                 if (!Settings.canDrawOverlays(this@MainActivity)) {
                     startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
@@ -139,7 +173,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val accessibilityCheck = Button(this).apply {
-            text = "2. Çift Tık İzni"
+            text = "2. Çift Tık"
             textSize = 11f
             setTextColor(Color.WHITE)
             isAllCaps = false
@@ -147,12 +181,26 @@ class MainActivity : AppCompatActivity() {
                 cornerRadius = dpToPx(12f).toFloat()
                 setColor(Color.parseColor("#4F46E5"))
             }
-            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34f), 1f)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34f), 1f).apply { rightMargin = dpToPx(5f) }
             setOnClickListener { showXiaomiPermissionGuide() }
+        }
+
+        val personTrainBtn = Button(this).apply {
+            text = "👤 Kişi Tanıt"
+            textSize = 11f
+            setTextColor(Color.WHITE)
+            isAllCaps = false
+            background = GradientDrawable().apply {
+                cornerRadius = dpToPx(12f).toFloat()
+                setColor(Color.parseColor("#0D9488"))
+            }
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34f), 1.1f)
+            setOnClickListener { showPersonTrainDialog() }
         }
 
         setupRow.addView(overlayCheck)
         setupRow.addView(accessibilityCheck)
+        setupRow.addView(personTrainBtn)
         header.addView(title)
         header.addView(privacyBanner)
         header.addView(setupRow)
@@ -322,7 +370,6 @@ class MainActivity : AppCompatActivity() {
         searchBoxContainer.addView(clearSearchBtn)
         mainContainer.addView(searchBoxContainer)
 
-        // Instagram tarzı sağa/sola kaydırarak Tümü <-> Videolar <-> Fotoğraflar sekme geçişi
         val tabSwipeDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
                 if (e1 == null) return false
@@ -346,7 +393,7 @@ class MainActivity : AppCompatActivity() {
             layoutManager = gridLayoutManager
             setHasFixedSize(true)
             itemAnimator = null
-            setItemViewCacheSize(30)
+            setItemViewCacheSize(24)
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -421,18 +468,59 @@ class MainActivity : AppCompatActivity() {
         checkPermissionAndLoadAlbums()
         observeScanServiceState()
 
+        // 110ms debounce: Her tuşta 800+ videoyu tekrar taramak yerine kelime yazılırken yağ gibi akar!
         searchInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                 val q = s?.toString()?.trim() ?: ""
                 clearSearchBtn.visibility = if (q.isNotEmpty()) View.VISIBLE else View.GONE
-                filterList(q, restoreScrollWhenEmpty = q.isEmpty(), immediate = true)
+                filterList(q, restoreScrollWhenEmpty = q.isEmpty(), immediate = q.isEmpty())
             }
             override fun afterTextChanged(s: Editable?) {}
         })
 
         updateTabColors()
         startupClean()
+    }
+
+    private fun showPersonTrainDialog() {
+        val prefs = getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+        val savedName = prefs.getString("self_person_name", "") ?: ""
+        val savedPhoto = prefs.getString("self_person_photo", "") ?: ""
+
+        val input = EditText(this).apply {
+            hint = "Adın (Örn: Mert veya Ben)"
+            setText(savedName.ifBlank { "Mert" })
+            setSelection(text.length)
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.GRAY)
+        }
+
+        val statusInfo = if (savedName.isNotBlank() && savedPhoto.isNotBlank()) {
+            "Kayıtlı kişi: $savedName ✅\nFotoğrafını güncellemek veya değiştirmek için aşağıdan yeni fotoğraf seçebilirsin."
+        } else {
+            "Kendi yüzünün net göründüğü 1 fotoğraf seçersen, AI taraması seni ve arkadaşlarını ('Mert ve arkadaşları...') tüm fotoğraflarda tanır!"
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("👤 Kişi / Yüz Tanıt")
+            .setMessage(statusInfo)
+            .setView(input)
+            .setPositiveButton("📷 Galeriden Fotoğraf Seç") { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isNotBlank()) {
+                    pendingPersonName = name
+                    pickSelfPhotoLauncher.launch("image/*")
+                } else {
+                    Toast.makeText(this, "Lütfen bir isim yaz!", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNeutralButton("🗑️ Temizle") { _, _ ->
+                prefs.edit().remove("self_person_name").remove("self_person_photo").apply()
+                Toast.makeText(this, "Kayıtlı kişi temizlendi.", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("İptal", null)
+            .show()
     }
 
     private fun switchTab(newFilter: Int) {
@@ -457,9 +545,7 @@ class MainActivity : AppCompatActivity() {
                 when {
                     internalPlayerLayout?.visibility == View.VISIBLE -> hideInternalPlayer()
                     !searchInput.text.isNullOrEmpty() -> clearSearchAndRestorePosition()
-                    currentFilter != 0 -> {
-                        switchTab(0)
-                    }
+                    currentFilter != 0 -> switchTab(0)
                     isScrolledDown -> {
                         savedScrollPosition = 0
                         savedScrollOffset = 0
@@ -504,7 +590,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun startupClean() {
         lifecycleScope.launch {
-            VideoIndexer(this@MainActivity).cleanExistingDatabaseRecords()
+            VideoIndexer(this@MainActivity).cleanExistingDatabaseRecordsFast()
             cachedAllMemes = null
             VideoIndexer.clearAllCaches()
             filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false, immediate = true)
@@ -512,16 +598,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshGalleryOnPullDown() {
+        swipeRefresh.isRefreshing = false
         lifecycleScope.launch {
-            VideoIndexer(this@MainActivity).cleanExistingDatabaseRecords()
             cachedAllMemes = null
             VideoIndexer.clearAllCaches()
-            filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false, immediate = true)
-            swipeRefresh.isRefreshing = false
+            loadAlbumsIntoSpinner()
             if (!ScanForegroundService.stateFlow.value.isRunning) {
-                loadAlbumsIntoSpinner()
                 startIncrementalScanService()
-                Toast.makeText(this@MainActivity, "🔄 Galeri yenilendi!", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, "🔄 Galeri anında yenilendi!", Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(this@MainActivity, "🔄 Liste güncellendi (tarama sürüyor)", Toast.LENGTH_SHORT).show()
             }
@@ -547,21 +631,21 @@ class MainActivity : AppCompatActivity() {
         }
 
         val onlineStatus = if (OnlineAiAnalyzer.isOnline(this)) {
-            "🟢 İnternet bağlı: Çoklu Ajan (Whisper AAC + Mantık Düzeltme + Qwen 3.8 Vision) aktif!"
+            "🟢 İnternet bağlı: Çoklu Ajan (Whisper AAC + Mantık Düzeltme + Qwen 3.8 Görsel/Kişi Tanıma) aktif!"
         } else {
             "🟠 İnternet bağlı değil: Çevrimdışı 3-Kare Altyazı OCR + Vosk motoru kullanılacak."
         }
 
         AlertDialog.Builder(this)
-            .setTitle("🌐 V13 Çoklu Ajan & Mantık Çözümleme")
+            .setTitle("🌐 V14 Çoklu Ajan & Fotoğraf Tanıma")
             .setMessage(
                 "Seçili albüm: $albumLabel\n\n" +
                 "$onlineStatus\n\n" +
-                "• Daha önce kontrol edilen ve repliği iyi olan videoları tekrar taramaz.\n" +
-                "• Mantıksız kelimeleri Türkçe bağlama göre düzeltir ve Instagram sayfa adlarını siler.\n" +
+                "• Fotoğraflarda yapı, yemek, gün batımı, çiçek, oyun adı ve tanıttığın kişileri ('Mert ve arkadaşları...') bulur.\n" +
+                "• Not: Ücretsiz Groq kotası dakikada ~3–4 fotoğraf işlediği için fotoğraflar biraz daha yavaş ama detaylı taranır.\n" +
                 "• ✏️ ile elle düzelttiğin kayıtlara kesinlikle dokunulmaz."
             )
-            .setPositiveButton("⚡ Eksik & Zayıfları Çöz") { _, _ ->
+            .setPositiveButton("⚡ Eksik & Fotoğrafları Çöz") { _, _ ->
                 launchRepairIntent(forceFullAlbum = false)
             }
             .setNeutralButton("🔥 Tüm Albümü Baştan Yenile") { _, _ ->
@@ -588,7 +672,7 @@ class MainActivity : AppCompatActivity() {
         searchJob?.cancel()
         searchJob = lifecycleScope.launch {
             if (!immediate && query.isNotEmpty()) {
-                delay(60)
+                delay(110)
             }
 
             val allCached = cachedAllMemes ?: withContext(Dispatchers.IO) {
@@ -675,7 +759,7 @@ class MainActivity : AppCompatActivity() {
     private fun showXiaomiPermissionGuide() {
         AlertDialog.Builder(this)
             .setTitle("🔑 Erişilebilirlik İzni Rehberi")
-            .setMessage("Xiaomi/Android güvenlik kilidini açmak için:\n\n1. Açılacak sayfada en alttaki 'Kısıtlanmış ayarlara izin ver' seçeneğini açın.\n2. Ardından Erişilebilirlik -> İndirilen Uygulamalar -> MemeTurbo'yu aktif edin.\n\nNot: Daha önce 'Hatalı çalışıyor' uyarısı aldıysanız kapatıp tekrar açmanız yeterlidir.")
+            .setMessage("Xiaomi/Android güvenlik kilidini açmak için:\n\n1. Açılacak sayfada en alttaki 'Kısıtlanmış ayarlara izin ver' seçeneğini açın.\n2. Ardından Erişilebilirlik -> İndirilen Uygulamalar -> MemeTurbo'yu aktif edin.")
             .setPositiveButton("Ayarlara Git") { _, _ ->
                 try {
                     val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
@@ -863,7 +947,7 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this@MainActivity, "⚠️ İnternet bağlantısı gerekli!", Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
-                Toast.makeText(this@MainActivity, "🌐 AI + Mantık Ajanı çözümlüyor...", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, "🌐 AI + Görsel Tanıma çözümlüyor...", Toast.LENGTH_SHORT).show()
                 lifecycleScope.launch {
                     val file = File(target.filePath)
                     val indexer = VideoIndexer(this@MainActivity)
@@ -981,6 +1065,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showInternalPlayer(meme: MemeVideo) {
+        photoAutoAdvanceJob?.cancel()
         currentPreviewMeme = meme
         currentPreviewIndex = currentFilteredList.indexOfFirst { it.filePath == meme.filePath }
         val overlay = internalPlayerLayout ?: return
@@ -1026,10 +1111,19 @@ class MainActivity : AppCompatActivity() {
                     iView.setImageBitmap(bmp)
                 }
             }
+            if (isSequentialPlayEnabled) {
+                photoAutoAdvanceJob = lifecycleScope.launch {
+                    delay(3000L)
+                    if (isSequentialPlayEnabled && internalPlayerLayout?.visibility == View.VISIBLE) {
+                        playAdjacentMedia(+1)
+                    }
+                }
+            }
         }
     }
 
     private fun hideInternalPlayer() {
+        photoAutoAdvanceJob?.cancel()
         internalVideoView?.stopPlayback()
         internalPlayerLayout?.visibility = View.GONE
     }
@@ -1116,6 +1210,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        photoAutoAdvanceJob?.cancel()
         internalVideoView?.stopPlayback()
     }
 }
