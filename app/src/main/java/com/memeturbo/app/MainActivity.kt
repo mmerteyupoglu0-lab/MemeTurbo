@@ -661,9 +661,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val desc = TextView(this).apply {
-            text = "Karman çorman galerideki taranmış videoları ve fotoğrafları amacına göre filtreleyip sana özel kalıcı bir AI albümü oluşturur.
-
-Hazır bir şablon seç veya istediğin albümü aşağıya yaz:"
+            text = "Karman çorman galerideki taranmış videoları ve fotoğrafları amacına göre filtreleyip sana özel kalıcı bir AI albümü oluşturur.\n\nHazır bir şablon seç veya istediğin albümü aşağıya yaz:"
             textSize = 12.5f
             setTextColor(Color.parseColor("#CBD5E1"))
             setPadding(0, 0, 0, dpToPx(8f))
@@ -955,17 +953,11 @@ Hazır bir şablon seç veya istediğin albümü aşağıya yaz:"
         AlertDialog.Builder(this)
             .setTitle("☁️ Google Fotoğraflar & AI Albüm")
             .setMessage(
-                "• Google Fotoğraflar'ın bulutta yedeklediği veya kendi AI'ı ile grupladığı video/fotoğrafları seçip MemeTurbo'ya özel albüm olarak aktarabilirsin (çoklu seçim yapılabilir).
-
-" +
-                "• Ayrıca normal galerisinde ayrı klasörler olmayanlar için albüm listesine otomatik:
-" +
-                "  🗣️ [AI Albüm] Replikli Videolar
-" +
-                "  📝 [AI Albüm] Yazılı & Altyazılılar
-" +
-                "  🏷️ [AI Albüm] Kişi / Oyun / Sahne
-" +
+                "• Google Fotoğraflar'ın bulutta yedeklediği veya kendi AI'ı ile grupladığı video/fotoğrafları seçip MemeTurbo'ya özel albüm olarak aktarabilirsin (çoklu seçim yapılabilir).\n\n" +
+                "• Ayrıca normal galerisinde ayrı klasörler olmayanlar için albüm listesine otomatik:\n" +
+                "  🗣️ [AI Albüm] Replikli Videolar\n" +
+                "  📝 [AI Albüm] Yazılı & Altyazılılar\n" +
+                "  🏷️ [AI Albüm] Kişi / Oyun / Sahne\n" +
                 "sanal albümleri eklendi!"
             )
             .setView(input)
