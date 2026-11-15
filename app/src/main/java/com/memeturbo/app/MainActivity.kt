@@ -116,11 +116,32 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private var pendingGPhotosAlbumName: String = "Google Foto Memeler"
+
+    private val pickGPhotosLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val data = result.data ?: return@registerForActivityResult
+        val uris = mutableListOf<Uri>()
+        data.clipData?.let { clip ->
+            for (i in 0 until clip.itemCount) {
+                clip.getItemAt(i)?.uri?.let { uris.add(it) }
+            }
+        }
+        if (uris.isEmpty()) {
+            data.data?.let { uris.add(it) }
+        }
+        if (uris.isNotEmpty()) {
+            importUrisFromGooglePhotos(uris, pendingGPhotosAlbumName)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        val theme = AppStrings.getTheme(this)
+        val strings = AppStrings.tr(this)
+
         val root = FrameLayout(this).apply {
-            setBackgroundColor(Color.parseColor("#0F172A"))
+            setBackgroundColor(theme.bgHex)
         }
 
         val mainContainer = LinearLayout(this).apply {
@@ -129,21 +150,43 @@ class MainActivity : AppCompatActivity() {
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dpToPx(16f), dpToPx(16f), dpToPx(16f), dpToPx(12f))
-            setBackgroundColor(Color.parseColor("#1E293B"))
+            setPadding(dpToPx(16f), dpToPx(14f), dpToPx(16f), dpToPx(10f))
+            setBackgroundColor(theme.headerHex)
+        }
+
+        val titleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
         }
 
         val title = TextView(this).apply {
-            text = "⚡ ReplikBul • MemeTurbo V15"
-            textSize = 20f
+            text = "⚡ ReplikBul • MemeTurbo V17"
+            textSize = 19f
             setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
 
+        val modeBadge = TextView(this).apply {
+            val isGp = AppStrings.getGalleryMode(this@MainActivity) == "gphotos"
+            text = if (isGp) "🌈 G.Foto Modu" else "📱 Klasör Modu"
+            textSize = 10.5f
+            setTextColor(Color.WHITE)
+            setPadding(dpToPx(8f), dpToPx(4f), dpToPx(8f), dpToPx(4f))
+            background = GradientDrawable().apply {
+                cornerRadius = dpToPx(10f).toFloat()
+                setColor(if (isGp) Color.parseColor("#EA580C") else theme.accentHex)
+            }
+            setOnClickListener { showOnboardingGalleryChoiceDialog(forceShow = true) }
+        }
+
+        titleRow.addView(title)
+        titleRow.addView(modeBadge)
+
         val privacyBanner = TextView(this).apply {
-            text = "🚀 V15 Turbo: Sıfır Donma Thumbnail • Yenilemede Sadece Sayım • Tek Seferlik AI & Kişi Tanıma"
-            textSize = 11.5f
+            text = strings.subtitleBanner
+            textSize = 11f
             setTextColor(Color.parseColor("#38BDF8"))
-            setPadding(0, dpToPx(6f), 0, dpToPx(8f))
+            setPadding(0, dpToPx(4f), 0, dpToPx(6f))
         }
 
         val setupRow = LinearLayout(this).apply {
@@ -152,43 +195,24 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dpToPx(4f) }
+            ).apply { topMargin = dpToPx(2f) }
         }
 
-        val overlayCheck = Button(this).apply {
-            text = "1. Yüzen"
+        val aiAlbumBtn = Button(this).apply {
+            text = strings.btnAiAlbum
             textSize = 11f
             setTextColor(Color.WHITE)
             isAllCaps = false
             background = GradientDrawable().apply {
                 cornerRadius = dpToPx(12f).toFloat()
-                setColor(if (Settings.canDrawOverlays(this@MainActivity)) Color.parseColor("#16A34A") else Color.parseColor("#0284C7"))
+                setColor(Color.parseColor("#8B5CF6"))
             }
-            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34f), 1f).apply { rightMargin = dpToPx(5f) }
-            setOnClickListener {
-                if (!Settings.canDrawOverlays(this@MainActivity)) {
-                    startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-                } else {
-                    Toast.makeText(this@MainActivity, "Yüzen pencere izni açık!", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-
-        val accessibilityCheck = Button(this).apply {
-            text = "2. Çift Tık"
-            textSize = 11f
-            setTextColor(Color.WHITE)
-            isAllCaps = false
-            background = GradientDrawable().apply {
-                cornerRadius = dpToPx(12f).toFloat()
-                setColor(Color.parseColor("#4F46E5"))
-            }
-            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34f), 1f).apply { rightMargin = dpToPx(5f) }
-            setOnClickListener { showXiaomiPermissionGuide() }
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(35f), 1.15f).apply { rightMargin = dpToPx(5f) }
+            setOnClickListener { showCreateAiAlbumDialog() }
         }
 
         val personTrainBtn = Button(this).apply {
-            text = "👤 Kişi Tanıt"
+            text = strings.btnPerson
             textSize = 11f
             setTextColor(Color.WHITE)
             isAllCaps = false
@@ -196,14 +220,41 @@ class MainActivity : AppCompatActivity() {
                 cornerRadius = dpToPx(12f).toFloat()
                 setColor(Color.parseColor("#0D9488"))
             }
-            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34f), 1.1f)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(35f), 0.9f).apply { rightMargin = dpToPx(5f) }
             setOnClickListener { showPersonTrainDialog() }
         }
 
-        setupRow.addView(overlayCheck)
-        setupRow.addView(accessibilityCheck)
+        val gPhotosBtn = Button(this).apply {
+            text = strings.btnGPhotos
+            textSize = 11f
+            setTextColor(Color.WHITE)
+            isAllCaps = false
+            background = GradientDrawable().apply {
+                cornerRadius = dpToPx(12f).toFloat()
+                setColor(Color.parseColor("#EA580C"))
+            }
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(35f), 0.95f).apply { rightMargin = dpToPx(5f) }
+            setOnClickListener { showGooglePhotosImportDialog() }
+        }
+
+        val settingsBtn = Button(this).apply {
+            text = strings.btnSettings
+            textSize = 11f
+            setTextColor(Color.WHITE)
+            isAllCaps = false
+            background = GradientDrawable().apply {
+                cornerRadius = dpToPx(12f).toFloat()
+                setColor(Color.parseColor("#475569"))
+            }
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(35f), 1.0f)
+            setOnClickListener { showSettingsDialog() }
+        }
+
+        setupRow.addView(aiAlbumBtn)
         setupRow.addView(personTrainBtn)
-        header.addView(title)
+        setupRow.addView(gPhotosBtn)
+        setupRow.addView(settingsBtn)
+        header.addView(titleRow)
         header.addView(privacyBanner)
         header.addView(setupRow)
         mainContainer.addView(header)
@@ -224,7 +275,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val scanBtn = Button(this).apply {
-            text = "Yenileri Tara ⚡"
+            text = strings.btnScanNew
             textSize = 11f
             setTextColor(Color.WHITE)
             isAllCaps = false
@@ -237,7 +288,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val repairBtn = Button(this).apply {
-            text = "🌐 AI Çözümle"
+            text = strings.btnAiAnalyze
             textSize = 11f
             setTextColor(Color.WHITE)
             isAllCaps = false
@@ -311,9 +362,9 @@ class MainActivity : AppCompatActivity() {
             setPadding(dpToPx(16f), dpToPx(4f), dpToPx(16f), dpToPx(8f))
         }
 
-        tabAllBtn = createFilterTab("Tümü", 0)
-        tabVideosBtn = createFilterTab("Videolar", 1)
-        tabImagesBtn = createFilterTab("Fotoğraflar", 2)
+        tabAllBtn = createFilterTab(strings.tabAll, 0)
+        tabVideosBtn = createFilterTab(strings.tabVideos, 1)
+        tabImagesBtn = createFilterTab(strings.tabPhotos, 2)
 
         tabRow.addView(tabAllBtn)
         tabRow.addView(tabVideosBtn)
@@ -349,7 +400,7 @@ class MainActivity : AppCompatActivity() {
                 return super.onKeyPreIme(keyCode, event)
             }
         }.apply {
-            hint = "Galeri içinde ara (replikler, kelimeler)..."
+            hint = strings.searchHint
             setHintTextColor(Color.parseColor("#94A3B8"))
             setTextColor(Color.WHITE)
             textSize = 14f
@@ -398,7 +449,7 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        gridLayoutManager = GridLayoutManager(this, 2)
+        gridLayoutManager = GridLayoutManager(this, AppStrings.getGridColumns(this))
         galleryRecycler = RecyclerView(this).apply {
             layoutManager = gridLayoutManager
             setHasFixedSize(true)
@@ -467,8 +518,8 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(root)
         try {
-            window.statusBarColor = Color.parseColor("#1E293B")
-            window.navigationBarColor = Color.parseColor("#0F172A")
+            window.statusBarColor = theme.headerHex
+            window.navigationBarColor = theme.bgHex
             val insetsController = WindowCompat.getInsetsController(window, root)
             insetsController.isAppearanceLightStatusBars = false
             insetsController.isAppearanceLightNavigationBars = false
@@ -490,6 +541,360 @@ class MainActivity : AppCompatActivity() {
 
         updateTabColors()
         startupClean()
+        showOnboardingGalleryChoiceDialog(forceShow = false)
+    }
+
+    private fun showOnboardingGalleryChoiceDialog(forceShow: Boolean) {
+        val prefs = getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+        if (!forceShow && prefs.getBoolean("onboarding_done_v17", false)) return
+
+        val strings = AppStrings.tr(this)
+        val currentMode = AppStrings.getGalleryMode(this)
+        val theme = AppStrings.getTheme(this)
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(18f), dpToPx(12f), dpToPx(18f), dpToPx(8f))
+        }
+
+        val infoText = TextView(this).apply {
+            text = strings.onboardingMsg
+            textSize = 13f
+            setTextColor(Color.parseColor("#CBD5E1"))
+            setPadding(0, 0, 0, dpToPx(12f))
+        }
+        container.addView(infoText)
+
+        var dialogRef: AlertDialog? = null
+
+        fun buildChoiceCard(iconTitle: String, desc: String, modeValue: String, accentColor: Int): LinearLayout {
+            val isSelected = currentMode == modeValue
+            return LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dpToPx(14f), dpToPx(12f), dpToPx(14f), dpToPx(12f))
+                background = GradientDrawable().apply {
+                    cornerRadius = dpToPx(16f).toFloat()
+                    setColor(theme.cardHex)
+                    setStroke(dpToPx(if (isSelected) 2.5f else 1.2f), if (isSelected) accentColor else theme.cardStrokeHex)
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dpToPx(10f) }
+
+                val tView = TextView(this@MainActivity).apply {
+                    text = if (isSelected) "$iconTitle  ✅" else iconTitle
+                    textSize = 14.5f
+                    setTextColor(Color.WHITE)
+                }
+                val dView = TextView(this@MainActivity).apply {
+                    text = desc
+                    textSize = 12f
+                    setTextColor(Color.parseColor("#94A3B8"))
+                    setPadding(0, dpToPx(4f), 0, 0)
+                }
+                addView(tView)
+                addView(dView)
+
+                setOnClickListener {
+                    prefs.edit()
+                        .putString("gallery_source_mode", modeValue)
+                        .putBoolean("onboarding_done_v17", true)
+                        .apply()
+                    dialogRef?.dismiss()
+                    if (modeValue == "gphotos") {
+                        selectedAlbumFilter = VideoIndexer.AI_ALBUM_FUNNY
+                        Toast.makeText(
+                            this@MainActivity,
+                            "🌈 Google Fotoğraflar & Akıllı AI Albüm modu aktif! Karışık videolar otomatik gruplandı.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        selectedAlbumFilter = null
+                        Toast.makeText(
+                            this@MainActivity,
+                            "📱 Telefon Galerisi (Klasör Modu) aktif!",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                    recreate()
+                }
+            }
+        }
+
+        container.addView(
+            buildChoiceCard(
+                "📱 Telefonun Kendi Galerisi (Klasör Modu)",
+                "WhatsApp, Download, Snaptube, kart gibi klasörleri ayrı ayrı albüm olarak gösterir.",
+                "device",
+                Color.parseColor("#0284C7")
+            )
+        )
+
+        container.addView(
+            buildChoiceCard(
+                "🌈 Google Fotoğraflar (Akıllı AI & Bulut Modu)",
+                "Normal galerisinde ayrı klasörler olmayanlar için karışık videoları '😂 Komik & Meme', '🗣️ Replikli', '🎮 Oyun' diye otomatik albümler + Google Fotoğraflar bulut seçicisini bağlar.",
+                "gphotos",
+                Color.parseColor("#EA580C")
+            )
+        )
+
+        dialogRef = AlertDialog.Builder(this)
+            .setTitle(strings.onboardingTitle)
+            .setView(container)
+            .setCancelable(forceShow)
+            .apply {
+                if (forceShow) {
+                    setNegativeButton("Kapat", null)
+                }
+            }
+            .create()
+
+        dialogRef.show()
+    }
+
+    private fun showCreateAiAlbumDialog() {
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(18f), dpToPx(10f), dpToPx(18f), dpToPx(6f))
+        }
+
+        val desc = TextView(this).apply {
+            text = "Karman çorman galerideki taranmış videoları ve fotoğrafları amacına göre filtreleyip sana özel kalıcı bir AI albümü oluşturur.
+
+Hazır bir şablon seç veya istediğin albümü aşağıya yaz:"
+            textSize = 12.5f
+            setTextColor(Color.parseColor("#CBD5E1"))
+            setPadding(0, 0, 0, dpToPx(8f))
+        }
+        container.addView(desc)
+
+        val nameInput = EditText(this).apply {
+            hint = "Albüm Adı (Örn: Komik & Küfürlü Memeler)"
+            setText("Komik & Küfürlü Memeler")
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.GRAY)
+            textSize = 13.5f
+        }
+
+        val goalInput = EditText(this).apply {
+            hint = "Ne tür videolar/fotoğraflar olsun? (Örn: komik, küfürlü, saçma, indirilen memeler)"
+            setText("komik küfürlü saçma eğlenceli indirilen meme videoları")
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.GRAY)
+            textSize = 13f
+        }
+
+        val presetsLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dpToPx(4f), 0, dpToPx(8f))
+        }
+
+        val presets = listOf(
+            "😂 Komik, Küfürlü & İndirilen Memeler" to ("Komik & Küfürlü Memeler" to "komik küfürlü saçma eğlenceli indirilen meme videoları"),
+            "🎮 Oyun & Edit Kesitleri" to ("Oyun & Editler" to "oyun game bannerlord lol minecraft gta edit kesit"),
+            "🤳 Ben, Arkadaşlar & Ortam" to ("Ben ve Arkadaşlar" to "kişi arkadaş mert ben selfie özçekim portre grup"),
+            "📚 Ders Notları, Sınav & Belgeler" to ("Ders & Belgeler" to "ders not sınav belge kağıt pdf kitap")
+        )
+
+        for ((btnTitle, pair) in presets) {
+            val b = Button(this).apply {
+                text = btnTitle
+                textSize = 11f
+                isAllCaps = false
+                setTextColor(Color.WHITE)
+                background = GradientDrawable().apply {
+                    cornerRadius = dpToPx(10f).toFloat()
+                    setColor(Color.parseColor("#334155"))
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    dpToPx(34f)
+                ).apply { bottomMargin = dpToPx(5f) }
+                setOnClickListener {
+                    nameInput.setText(pair.first)
+                    goalInput.setText(pair.second)
+                }
+            }
+            presetsLayout.addView(b)
+        }
+
+        container.addView(presetsLayout)
+        container.addView(nameInput)
+        container.addView(goalInput)
+
+        val customAlbums = AppStrings.getSavedCustomAiAlbums(this)
+
+        AlertDialog.Builder(this)
+            .setTitle("✨ Bana Özel AI Albüm Oluştur")
+            .setView(container)
+            .setPositiveButton("🤖 AI Albümü Oluştur") { _, _ ->
+                val albTitle = nameInput.text.toString().trim().ifBlank { "Komik Memeler" }
+                val goal = goalInput.text.toString().trim().ifBlank { albTitle }
+                buildCustomAiAlbumNow(albTitle, goal)
+            }
+            .apply {
+                if (customAlbums.isNotEmpty()) {
+                    setNeutralButton("🗑️ Özel Albüm Sil") { _, _ ->
+                        val titles = customAlbums.keys.toTypedArray()
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("Silinecek AI Albümü Seç")
+                            .setItems(titles) { _, which ->
+                                AppStrings.deleteCustomAiAlbum(this@MainActivity, titles[which])
+                                selectedAlbumFilter = null
+                                loadAlbumsIntoSpinner()
+                                filterList("", immediate = true)
+                                Toast.makeText(this@MainActivity, "🗑️ ${titles[which]} silindi.", Toast.LENGTH_SHORT).show()
+                            }
+                            .show()
+                    }
+                }
+            }
+            .setNegativeButton("İptal", null)
+            .show()
+    }
+
+    private fun buildCustomAiAlbumNow(albTitle: String, goalPrompt: String) {
+        lifecycleScope.launch {
+            statusText.text = "🤖 '$albTitle' için taranmış medyalar AI ile filtreleniyor..."
+            val all = cachedAllMemes ?: withContext(Dispatchers.IO) {
+                MemeDatabase.getInstance(this@MainActivity).memeDao().getAllMemes()
+            }.also { cachedAllMemes = it }
+
+            if (all.isEmpty()) {
+                Toast.makeText(
+                    this@MainActivity,
+                    "⚠️ Henüz taranmış medya yok! Önce 'Yenileri Tara ⚡' butonuna bas.",
+                    Toast.LENGTH_LONG
+                ).show()
+                return@launch
+            }
+
+            val matchedPaths = OnlineAiAnalyzer.selectItemsForCustomAiAlbum(
+                context = this@MainActivity,
+                userGoal = goalPrompt,
+                allMemes = all
+            )
+
+            if (matchedPaths.isEmpty()) {
+                statusText.text = "⚠️ '$goalPrompt' kriterine uygun medya bulunamadı."
+                Toast.makeText(this@MainActivity, "⚠️ Eşleşen medya bulunamadı, farklı kelimeler dene.", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+
+            val fullTitle = if (albTitle.startsWith("🤖 ")) albTitle else "🤖 $albTitle"
+            AppStrings.saveCustomAiAlbum(this@MainActivity, fullTitle, matchedPaths)
+            selectedAlbumFilter = fullTitle
+            loadAlbumsIntoSpinner()
+            filterList("", restoreScrollWhenEmpty = false, immediate = true)
+            statusText.text = "✨ '$fullTitle' hazır! (${matchedPaths.size} medya seçildi)"
+            Toast.makeText(
+                this@MainActivity,
+                "✅ '$fullTitle' oluşturuldu (${matchedPaths.size} medya)!",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    private fun showSettingsDialog() {
+        val prefs = getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+        val strings = AppStrings.tr(this)
+        val curTheme = AppStrings.getTheme(this)
+        val curCols = AppStrings.getGridColumns(this)
+        val curCompact = AppStrings.isCompactGalleryCard(this)
+        val curMode = if (AppStrings.getGalleryMode(this) == "gphotos") "🌈 Google Fotoğraflar Modu" else "📱 Telefon Galerisi Modu"
+        val curLang = AppStrings.getLang(this).uppercase()
+        val autoMultiLang = AppStrings.isAutoMultiLangAi(this)
+        val overlayOk = Settings.canDrawOverlays(this)
+
+        val options = arrayOf(
+            "1. Galeri Kaynağı: $curMode (Değiştir)",
+            "2. Arayüz Teması: ${curTheme.nameTr}",
+            "3. Izgara Sütun Sayısı: $curCols Sütun (1 / 2 / 3 Sütun)",
+            "4. Kart Görünüm Stili: ${if (curCompact) "Kompakt Galeri" else "Modern Rozetli Kart"}",
+            "5. Uygulama Dili (8 Global Dil): $curLang",
+            "6. AI Ses Dil Algılama: ${if (autoMultiLang) "🌍 Otomatik Çoklu Dil (TR+EN+Global)" else "🇹🇷 Sadece Seçili Dil"}",
+            "7. Yüzen Pencere İzni: ${if (overlayOk) "✅ Açık" else "⚠️ İzin Ver"}",
+            "8. Çift Tık Klavye İzni (Erişilebilirlik Ayarı)",
+            "9. ☁️ Google Fotoğraflar'dan Medya / Albüm İçe Aktar"
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle(strings.settingsTitle)
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> showOnboardingGalleryChoiceDialog(forceShow = true)
+                    1 -> {
+                        val themeNames = AppStrings.themes.map { it.nameTr }.toTypedArray()
+                        AlertDialog.Builder(this)
+                            .setTitle("🎨 Arayüz Teması Seç")
+                            .setItems(themeNames) { _, idx ->
+                                prefs.edit().putInt("ui_theme_id", idx).apply()
+                                recreate()
+                            }
+                            .show()
+                    }
+                    2 -> {
+                        val colOptions = arrayOf(
+                            "1 Sütun (Sinematik Büyük Görünüm)",
+                            "2 Sütun (Standart Modern Meme Izgarası)",
+                            "3 Sütun (Google Fotoğraflar / Kompakt Galeri Izgarası)"
+                        )
+                        AlertDialog.Builder(this)
+                            .setTitle("📐 Sütun Sayısı Seç")
+                            .setItems(colOptions) { _, idx ->
+                                prefs.edit().putInt("ui_grid_columns", idx + 1).apply()
+                                recreate()
+                            }
+                            .show()
+                    }
+                    3 -> {
+                        prefs.edit().putBoolean("ui_compact_card", !curCompact).apply()
+                        recreate()
+                    }
+                    4 -> {
+                        val langs = arrayOf(
+                            "🇹🇷 Türkçe (TR)" to "tr",
+                            "🇬🇧 English (EN)" to "en",
+                            "🇫🇷 Français (FR)" to "fr",
+                            "🇮🇹 Italiano (IT)" to "it",
+                            "🇪🇸 Español (ES)" to "es",
+                            "🇷🇺 Русский (RU)" to "ru",
+                            "🇩🇪 Deutsch (DE)" to "de",
+                            "🇸🇦 العربية (AR)" to "ar"
+                        )
+                        AlertDialog.Builder(this)
+                            .setTitle("🌍 Global Dil Seçimi")
+                            .setItems(langs.map { it.first }.toTypedArray()) { _, idx ->
+                                prefs.edit().putString("app_lang", langs[idx].second).apply()
+                                recreate()
+                            }
+                            .show()
+                    }
+                    5 -> {
+                        val nextVal = !autoMultiLang
+                        prefs.edit().putBoolean("ai_auto_multilang", nextVal).apply()
+                        val msg = if (nextVal) {
+                            "🌍 Otomatik Çoklu Dil aktif! Türkçe, İngilizce ve diğer dillerdeki videolar otomatik algılanır."
+                        } else {
+                            "🇹🇷 Sabit dil modu aktif!"
+                        }
+                        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                    }
+                    6 -> {
+                        if (!Settings.canDrawOverlays(this)) {
+                            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                        } else {
+                            Toast.makeText(this, "✅ Yüzen pencere izni zaten açık!", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    7 -> showXiaomiPermissionGuide()
+                    8 -> showGooglePhotosImportDialog()
+                }
+            }
+            .setNegativeButton("Kapat", null)
+            .show()
     }
 
     private fun showPersonTrainDialog() {
@@ -538,7 +943,132 @@ class MainActivity : AppCompatActivity() {
         filterList(searchInput.text.toString().trim(), immediate = true)
     }
 
+    private fun showGooglePhotosImportDialog() {
+        val input = EditText(this).apply {
+            hint = "Albüm adı (Örn: Google Foto Memeler)"
+            setText(pendingGPhotosAlbumName)
+            setSelection(text.length)
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.GRAY)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("☁️ Google Fotoğraflar & AI Albüm")
+            .setMessage(
+                "• Google Fotoğraflar'ın bulutta yedeklediği veya kendi AI'ı ile grupladığı video/fotoğrafları seçip MemeTurbo'ya özel albüm olarak aktarabilirsin (çoklu seçim yapılabilir).
+
+" +
+                "• Ayrıca normal galerisinde ayrı klasörler olmayanlar için albüm listesine otomatik:
+" +
+                "  🗣️ [AI Albüm] Replikli Videolar
+" +
+                "  📝 [AI Albüm] Yazılı & Altyazılılar
+" +
+                "  🏷️ [AI Albüm] Kişi / Oyun / Sahne
+" +
+                "sanal albümleri eklendi!"
+            )
+            .setView(input)
+            .setPositiveButton("☁️ Google Fotoğraflar'dan Seç") { _, _ ->
+                val rawName = input.text.toString().trim().ifBlank { "Google Foto Memeler" }
+                pendingGPhotosAlbumName = rawName.replace(Regex("[\\/:*?\"<>|]"), "_").take(32)
+                launchGooglePhotosPicker(preferGooglePhotosApp = true)
+            }
+            .setNeutralButton("📂 Sistem Bulut Seçici") { _, _ ->
+                val rawName = input.text.toString().trim().ifBlank { "Google Foto Memeler" }
+                pendingGPhotosAlbumName = rawName.replace(Regex("[\\/:*?\"<>|]"), "_").take(32)
+                launchGooglePhotosPicker(preferGooglePhotosApp = false)
+            }
+            .setNegativeButton("İptal", null)
+            .show()
+    }
+
+    private fun launchGooglePhotosPicker(preferGooglePhotosApp: Boolean) {
+        try {
+            val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                type = "*/*"
+                putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("video/*", "image/*"))
+                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                addCategory(Intent.CATEGORY_OPENABLE)
+                if (preferGooglePhotosApp) {
+                    setPackage("com.google.android.apps.photos")
+                }
+            }
+            pickGPhotosLauncher.launch(intent)
+        } catch (_: Exception) {
+            val fallback = Intent(Intent.ACTION_GET_CONTENT).apply {
+                type = "*/*"
+                putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("video/*", "image/*"))
+                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                addCategory(Intent.CATEGORY_OPENABLE)
+            }
+            pickGPhotosLauncher.launch(Intent.createChooser(fallback, "Medyaları Seç (Uzun basarak çoklu seçebilirsin)"))
+        }
+    }
+
+    private fun importUrisFromGooglePhotos(uris: List<Uri>, albumFolderName: String) {
+        lifecycleScope.launch {
+            statusText.text = "☁️ Google Fotoğraflar'dan ${uris.size} medya aktarılıyor..."
+            val importedItems = withContext(Dispatchers.IO) {
+                val destDir = File(File(filesDir, "gphotos_albums"), albumFolderName)
+                if (!destDir.exists()) destDir.mkdirs()
+                val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
+                val list = mutableListOf<MemeVideo>()
+
+                for ((idx, uri) in uris.withIndex()) {
+                    try {
+                        val mime = contentResolver.getType(uri) ?: ""
+                        val isVid = mime.startsWith("video") || uri.toString().contains("video", ignoreCase = true)
+                        val ext = if (isVid) "mp4" else "jpg"
+                        val fileName = "gphoto_${System.currentTimeMillis()}_$idx.$ext"
+                        val destFile = File(destDir, fileName)
+                        contentResolver.openInputStream(uri)?.use { input ->
+                            FileOutputStream(destFile).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                        if (destFile.exists() && destFile.length() > 0L) {
+                            list.add(
+                                MemeVideo(
+                                    filePath = destFile.absolutePath,
+                                    fileName = destFile.nameWithoutExtension,
+                                    durationMs = 0L,
+                                    spokenText = "",
+                                    screenText = "",
+                                    visualLabels = "",
+                                    isVideo = isVid,
+                                    lastModified = System.currentTimeMillis(),
+                                    albumName = "☁️ $albumFolderName"
+                                )
+                            )
+                        }
+                    } catch (_: Exception) {}
+                }
+                if (list.isNotEmpty()) {
+                    db.insertMemesBatch(list)
+                }
+                list
+            }
+
+            if (importedItems.isNotEmpty()) {
+                cachedAllMemes = null
+                selectedAlbumFilter = "☁️ $albumFolderName"
+                loadAlbumsIntoSpinner()
+                filterList("", restoreScrollWhenEmpty = false, immediate = true)
+                statusText.text = "✅ ${importedItems.size} medya '☁️ $albumFolderName' albümüne eklendi! ('Yenileri Tara ⚡' ile çözümleyebilirsin)."
+                Toast.makeText(
+                    this@MainActivity,
+                    "✅ ${importedItems.size} medya Google Fotoğraflar'dan aktarıldı!",
+                    Toast.LENGTH_LONG
+                ).show()
+            } else {
+                statusText.text = "⚠️ Medya aktarılamadı, tekrar deneyin."
+            }
+        }
+    }
+
     private fun hideKeyboard() {
+        if (!searchInput.hasFocus()) return
         searchInput.clearFocus()
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
         imm?.hideSoftInputFromWindow(searchInput.windowToken, 0)
@@ -599,9 +1129,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun startupClean() {
         lifecycleScope.launch {
-            VideoIndexer(this@MainActivity).cleanExistingDatabaseRecordsFast()
-            cachedAllMemes = null
-            VideoIndexer.clearAllCaches()
+            val prefs = getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+            val alreadyCleaned = prefs.getBoolean("db_cleaned_v16", false)
+            if (!alreadyCleaned) {
+                withContext(Dispatchers.IO) {
+                    VideoIndexer(this@MainActivity).cleanExistingDatabaseRecordsFast()
+                }
+                prefs.edit().putBoolean("db_cleaned_v16", true).apply()
+                cachedAllMemes = null
+            }
             filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false, immediate = true)
         }
     }
@@ -718,16 +1254,33 @@ class MainActivity : AppCompatActivity() {
                     2 -> allCached.filter { !it.isVideo }
                     else -> allCached
                 }
-                val albumFiltered = if (selectedAlbumFilter == null) {
-                    typeList
-                } else {
-                    typeList.filter { it.albumName == selectedAlbumFilter }
+                val customAlbumsMap = AppStrings.getSavedCustomAiAlbums(this@MainActivity)
+                val albumFiltered = when {
+                    selectedAlbumFilter == null -> typeList
+                    selectedAlbumFilter == VideoIndexer.AI_ALBUM_FUNNY -> typeList.filter {
+                        AppStrings.isFunnyOrDownloadedMeme(it)
+                    }
+                    selectedAlbumFilter == VideoIndexer.AI_ALBUM_SPEECH -> typeList.filter {
+                        it.isVideo && it.spokenText.isNotBlank() && !OnlineAiAnalyzer.isMusicOrEmptyTranscript(it.spokenText)
+                    }
+                    selectedAlbumFilter == VideoIndexer.AI_ALBUM_SUBTITLE -> typeList.filter {
+                        it.screenText.isNotBlank()
+                    }
+                    selectedAlbumFilter == VideoIndexer.AI_ALBUM_VISUAL -> typeList.filter {
+                        it.visualLabels.isNotBlank()
+                    }
+                    selectedAlbumFilter in customAlbumsMap -> {
+                        val pathSet = customAlbumsMap[selectedAlbumFilter] ?: emptySet()
+                        typeList.filter { it.filePath in pathSet }
+                    }
+                    else -> typeList.filter { it.albumName == selectedAlbumFilter }
                 }
                 val finalItems = if (query.isEmpty()) {
                     albumFiltered
                 } else {
                     VideoIndexer.smartSearchFilter(albumFiltered, query)
                 }
+                VideoIndexer.prewarmDisplaySnippets(finalItems)
                 Pair(finalItems, albumFiltered.size)
             }
 
@@ -770,8 +1323,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateTabColors() {
-        val activeColor = Color.parseColor("#0284C7")
-        val inactiveColor = Color.parseColor("#1E293B")
+        val theme = AppStrings.getTheme(this)
+        val activeColor = theme.accentHex
+        val inactiveColor = theme.cardHex
 
         tabAllBtn.background = GradientDrawable().apply {
             cornerRadius = dpToPx(10f).toFloat()

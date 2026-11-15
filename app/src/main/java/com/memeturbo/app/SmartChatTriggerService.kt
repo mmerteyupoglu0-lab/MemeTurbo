@@ -275,11 +275,13 @@ class SmartChatTriggerService : AccessibilityService() {
                     } else {
                         all.filter { it.albumName == selectedOverlayAlbum }
                     }
-                    if (query.isEmpty()) {
+                    val list = if (query.isEmpty()) {
                         albumFiltered
                     } else {
                         VideoIndexer.smartSearchFilter(albumFiltered, query)
                     }
+                    VideoIndexer.prewarmDisplaySnippets(list)
+                    list
                 }
                 adapter.submitList(results) {
                     if (query.isNotEmpty()) {

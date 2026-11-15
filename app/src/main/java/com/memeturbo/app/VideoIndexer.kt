@@ -132,8 +132,25 @@ class VideoIndexer(private val context: Context) {
             return false
         }
 
+        const val AI_ALBUM_FUNNY = "😂 [AI Albüm] Komik & Meme Videoları"
+        const val AI_ALBUM_SPEECH = "🗣️ [AI Albüm] Replikli Videolar"
+        const val AI_ALBUM_SUBTITLE = "📝 [AI Albüm] Yazılı & Altyazılılar"
+        const val AI_ALBUM_VISUAL = "🏷️ [AI Albüm] Kişi / Oyun / Sahne"
+
+        fun prewarmDisplaySnippets(memes: List<MemeVideo>) {
+            for (meme in memes) {
+                getCachedDisplaySnippet(meme)
+            }
+        }
+
+        fun getFastSnippetForUi(meme: MemeVideo): String {
+            val cacheKey = "${meme.filePath}|${meme.spokenText.length}|${meme.screenText.length}|${meme.visualLabels.length}"
+            snippetCache[cacheKey]?.let { return it }
+            return getCachedDisplaySnippet(meme)
+        }
+
         fun getCachedDisplaySnippet(meme: MemeVideo): String {
-            val cacheKey = "${meme.filePath}|${meme.spokenText.hashCode()}|${meme.screenText.hashCode()}|${meme.visualLabels.hashCode()}"
+            val cacheKey = "${meme.filePath}|${meme.spokenText.length}|${meme.screenText.length}|${meme.visualLabels.length}"
             snippetCache[cacheKey]?.let { return it }
 
             val rawSpoken = meme.spokenText.replace("\u200B", "").trim()
@@ -143,9 +160,9 @@ class VideoIndexer(private val context: Context) {
             val cleanVisual = cleanVisualLabelsString(meme.visualLabels)
             val weakSpoken = isWeakSpokenFiller(cleanSpoken)
 
-            val snippet = when {
+            val rawSnippet = when {
                 cleanSpoken.isNotBlank() && !weakSpoken && cleanScreen.isNotBlank() && !cleanSpoken.equals(cleanScreen, ignoreCase = true) ->
-                    "🗣️ $cleanSpoken • 📝 $cleanScreen"
+                    "🗣️ ${cleanSpoken.take(48)} • 📝 ${cleanScreen.take(48)}"
                 cleanSpoken.isNotBlank() && !weakSpoken -> "🗣️ $cleanSpoken"
                 cleanScreen.isNotBlank() -> "📝 $cleanScreen"
                 cleanVisual.isNotBlank() -> if (cleanVisual.any { !it.isLetterOrDigit() && !it.isWhitespace() }) cleanVisual else "🏷️ $cleanVisual"
@@ -154,7 +171,9 @@ class VideoIndexer(private val context: Context) {
                 cleanTitle.isNotBlank() -> "🖼️ $cleanTitle"
                 else -> if (meme.isVideo) "🎬 Video" else "🖼️ Görsel"
             }
+            val snippet = if (rawSnippet.length > 88) rawSnippet.take(85) + "..." else rawSnippet
             snippetCache[cacheKey] = snippet
+            snippetCache[meme.filePath] = snippet
             return snippet
         }
 
@@ -284,71 +303,34 @@ class VideoIndexer(private val context: Context) {
 
         private val foreignScriptRegex = Regex("[\\p{IsHan}\\p{IsHiragana}\\p{IsKatakana}\\p{IsHangul}\\p{InArabic}]+")
 
-        private val spamAndWatermarkPatterns = listOf(
-            Regex("@[a-zA-Z0-9._]+", RegexOption.IGNORE_CASE),
-            Regex("[0-9]*galerim[a-zA-Z0-9._]*", RegexOption.IGNORE_CASE),
-            Regex(".*galeriko.*", RegexOption.IGNORE_CASE),
-            Regex(".*rraene.*", RegexOption.IGNORE_CASE),
-            Regex(".*humor.*", RegexOption.IGNORE_CASE),
-            Regex(".*mizah.*", RegexOption.IGNORE_CASE),
-            Regex(".*tv.*anime.*", RegexOption.IGNORE_CASE),
-            Regex(".*instagram.*", RegexOption.IGNORE_CASE),
-            Regex(".*tiktok.*", RegexOption.IGNORE_CASE),
-            Regex(".*sayfa.*", RegexOption.IGNORE_CASE),
-            Regex(".*arsiv.*", RegexOption.IGNORE_CASE),
-            Regex(".*arşiv.*", RegexOption.IGNORE_CASE),
-            Regex(".*reels.*", RegexOption.IGNORE_CASE),
-            Regex(".*kesfet.*", RegexOption.IGNORE_CASE),
-            Regex(".*keşfet.*", RegexOption.IGNORE_CASE),
-            Regex(".*takip.*", RegexOption.IGNORE_CASE),
-            Regex(".*gatts.*", RegexOption.IGNORE_CASE),
-            Regex(".*inshot.*", RegexOption.IGNORE_CASE),
-            Regex(".*paqutex.*", RegexOption.IGNORE_CASE),
-            Regex(".*canerimo.*", RegexOption.IGNORE_CASE),
-            Regex(".*begenenler.*", RegexOption.IGNORE_CASE),
-            Regex(".*beğenenler.*", RegexOption.IGNORE_CASE),
-            Regex(".*toosted.*", RegexOption.IGNORE_CASE),
-            Regex(".*ataner.*", RegexOption.IGNORE_CASE),
-            Regex(".*odunyanin.*", RegexOption.IGNORE_CASE),
-            Regex(".*damladila.*", RegexOption.IGNORE_CASE),
-            Regex(".*koftilenk.*", RegexOption.IGNORE_CASE),
-            Regex(".*yourmood.*", RegexOption.IGNORE_CASE),
-            Regex(".*enesyildiz.*", RegexOption.IGNORE_CASE),
-            Regex(".*mrzaersa.*", RegexOption.IGNORE_CASE),
-            Regex(".*shitrazse.*", RegexOption.IGNORE_CASE),
-            Regex(".*rooelmi.*", RegexOption.IGNORE_CASE),
-            Regex(".*bufutbolist.*", RegexOption.IGNORE_CASE),
-            Regex(".*depresitsporta.*", RegexOption.IGNORE_CASE),
-            Regex(".*saodspude.*", RegexOption.IGNORE_CASE),
-            Regex(".*bvdolar.*", RegexOption.IGNORE_CASE),
-            Regex(".*kraliny.*", RegexOption.IGNORE_CASE),
-            Regex(".*subscribe.*", RegexOption.IGNORE_CASE),
-            Regex(".*vogue\\s*world.*", RegexOption.IGNORE_CASE),
-            Regex(".*hollywood.*", RegexOption.IGNORE_CASE),
-            Regex(".*gracieabrams.*", RegexOption.IGNORE_CASE),
-            Regex(".*dojacat.*", RegexOption.IGNORE_CASE),
-            Regex(".*bellingham.*", RegexOption.IGNORE_CASE),
-            Regex(".*stepped into the crowd.*", RegexOption.IGNORE_CASE),
-            Regex(".*took a turn in the audience.*", RegexOption.IGNORE_CASE),
-            Regex(".*biyografiden kanala.*", RegexOption.IGNORE_CASE),
-            Regex(".*videoları indirmek için.*", RegexOption.IGNORE_CASE),
-            Regex(".*one piece.*", RegexOption.IGNORE_CASE),
-            Regex(".*solo leveling.*", RegexOption.IGNORE_CASE),
-            Regex(".*abone hedefi.*", RegexOption.IGNORE_CASE),
-            Regex(".*batuhanfurkan.*", RegexOption.IGNORE_CASE),
-            Regex(".*üperlig.*", RegexOption.IGNORE_CASE),
-            Regex(".*süperlig.*", RegexOption.IGNORE_CASE),
-            Regex(".*ülker\\s*stad.*", RegexOption.IGNORE_CASE),
-            Regex(".*ulker\\s*stad.*", RegexOption.IGNORE_CASE),
-            Regex(".*bwin.*", RegexOption.IGNORE_CASE),
-            Regex(".*heineken.*", RegexOption.IGNORE_CASE),
-            Regex(".*hankook.*", RegexOption.IGNORE_CASE),
-            Regex(".*ukicard.*", RegexOption.IGNORE_CASE),
-            Regex(".*rezervcom.*", RegexOption.IGNORE_CASE),
-            Regex(".*www\\..*", RegexOption.IGNORE_CASE),
-            Regex(".*\\.com.*", RegexOption.IGNORE_CASE),
-            Regex(".*\\.co\\b.*", RegexOption.IGNORE_CASE)
+        private val handleRegex = Regex("@[a-zA-Z0-9._]+")
+        private val onlyDigitsPunctRegex = Regex("^[0-9\\W_]+$")
+
+        private val spamSubstrings = arrayOf(
+            "galerim", "galeriko", "rraene", "humor", "mizah", "instagram",
+            "tiktok", "sayfa", "arsiv", "arşiv", "reels", "kesfet", "keşfet",
+            "takip", "gatts", "inshot", "paqutex", "canerimo", "begenenler",
+            "beğenenler", "toosted", "ataner", "odunyanin", "damladila",
+            "koftilenk", "yourmood", "enesyildiz", "mrzaersa", "shitrazse",
+            "rooelmi", "bufutbolist", "depresitsporta", "saodspude", "bvdolar",
+            "kraliny", "subscribe", "vogue world", "vogueworld", "hollywood",
+            "gracieabrams", "dojacat", "bellingham", "stepped into the crowd",
+            "took a turn in the audience", "biyografiden kanala",
+            "videoları indirmek için", "one piece", "solo leveling",
+            "abone hedefi", "batuhanfurkan", "üperlig", "süperlig",
+            "ülker stad", "ulker stad", "bwin", "heineken", "hankook",
+            "ukicard", "rezervcom", "www.", ".com"
         )
+
+        private fun containsWatermarkSubstring(text: String): Boolean {
+            if (text.contains('@') && handleRegex.containsMatchIn(text)) return true
+            val low = text.lowercase()
+            if (low.contains("tv") && low.contains("anime")) return true
+            for (sub in spamSubstrings) {
+                if (low.contains(sub)) return true
+            }
+            return false
+        }
 
         private val singleWordTrash = setOf(
             "canli", "canlı", "live", "manti", "mantı", "polis", "avea", "opet", "avis",
@@ -486,7 +468,24 @@ class VideoIndexer(private val context: Context) {
         )
 
         fun cleanFileNameForDisplay(rawName: String): String {
-            var s = rawName
+            val trimmedRaw = rawName.trim()
+            val lowRaw = trimmedRaw.lowercase()
+            if (lowRaw.startsWith("img-") || lowRaw.startsWith("img_") ||
+                lowRaw.startsWith("vid-") || lowRaw.startsWith("vid_") ||
+                lowRaw.startsWith("whatsapp") || lowRaw.startsWith("screenshot") ||
+                lowRaw.startsWith("inshot") || lowRaw.startsWith("youcut") ||
+                lowRaw.startsWith("lv_0_") || lowRaw.startsWith("instagram") ||
+                lowRaw.startsWith("snap") || lowRaw.startsWith("pxl_") ||
+                lowRaw.startsWith("dcim") || lowRaw.startsWith("file_") ||
+                lowRaw.startsWith("file ")
+            ) {
+                for ((key, personName) in knownMemeFigures) {
+                    if (lowRaw.contains(key)) return personName
+                }
+                return ""
+            }
+
+            var s = trimmedRaw
                 .replace(Regex("\\.(mp4|jpg|jpeg|png|webp|gif)$", RegexOption.IGNORE_CASE), "")
                 .replace(Regex("\\((MP4|720P_HD|360P|1080P|WEBP|JPG|PNG)\\)", RegexOption.IGNORE_CASE), "")
                 .replace(foreignScriptRegex, " ")
@@ -506,19 +505,7 @@ class VideoIndexer(private val context: Context) {
 
             val trimmed = s.trim()
             val lower = trimmed.lowercase()
-            if (lower.startsWith("vid_") || lower.startsWith("vid-") ||
-                lower.startsWith("img_") || lower.startsWith("img-") ||
-                lower.startsWith("inshot") || lower.startsWith("youcut") ||
-                lower.startsWith("lv_0_") || lower.startsWith("screenshot") ||
-                lower.startsWith("instagram") || lower.startsWith("unconfirmed") ||
-                lower.startsWith("snap") || lower.startsWith(" whatsapp") ||
-                lower.matches(Regex("^[a-z0-9_.]+-\\d{8}-\\d+$")) ||
-                lower.matches(Regex("^[0-9a-f]{16,}$")) ||
-                lower.matches(Regex("^\\d[a-z0-9_\\s-]{10,}$"))
-            ) {
-                for ((key, personName) in knownMemeFigures) {
-                    if (lower.contains(key)) return personName
-                }
+            if (lower.length >= 12 && lower.all { it.isDigit() || it in 'a'..'f' || it == '_' || it == '-' || it == ' ' }) {
                 return ""
             }
 
@@ -537,7 +524,8 @@ class VideoIndexer(private val context: Context) {
 
         fun filterWatermarks(rawText: String): String {
             if (rawText.isBlank()) return ""
-            val lines = rawText
+            val capped = if (rawText.length > 500) rawText.substring(0, 500) else rawText
+            val lines = capped
                 .replace(foreignScriptRegex, " ")
                 .split("\n", "|")
                 .map { it.trim() }
@@ -554,12 +542,9 @@ class VideoIndexer(private val context: Context) {
 
                 if (letterCount < 4) return@filter false
                 if (lower in singleWordTrash) return@filter false
-                if (cleanLine.matches(Regex("^[0-9\\W_]+$"))) return@filter false
+                if (onlyDigitsPunctRegex.matches(cleanLine)) return@filter false
 
-                val tokens = cleanLine.split(Regex("\\s+"))
-                if (tokens.all { tok -> tok.length >= 4 && tok.all { !it.isLetter() || it.isUpperCase() } && (tok.length <= 18 && !cleanLine.contains(" ") || tok.any { it.isDigit() }) }) {
-                    return@filter false
-                }
+                val tokens = cleanLine.split(' ').filter { it.isNotBlank() }
                 if (tokens.size == 1 && cleanLine.length >= 6 && cleanLine.all { !it.isLetter() || it.isUpperCase() }) {
                     return@filter false
                 }
@@ -567,20 +552,21 @@ class VideoIndexer(private val context: Context) {
                 val isShortAllCapsLogo = cleanLine.length <= 6 && cleanLine.all { !it.isLetter() || it.isUpperCase() } && !cleanLine.contains(" ")
                 if (isShortAllCapsLogo) return@filter false
 
-                spamAndWatermarkPatterns.none { pattern -> pattern.containsMatchIn(cleanLine) }
+                !containsWatermarkSubstring(cleanLine)
             }
 
             val cleanedLines = filtered.map { line ->
-                line.split(Regex("\\s+")).filter { tok ->
+                line.split(' ').filter { tok ->
+                    if (tok.isBlank()) return@filter false
                     val stripped = tok.trim('.', ',', ':', ';', '!', '?')
                     val isInstaHandleToken = stripped.length >= 7 &&
                         stripped.all { !it.isLetter() || it.isUpperCase() } &&
                         stripped.any { it.isLetter() }
-                    !isInstaHandleToken && spamAndWatermarkPatterns.none { it.containsMatchIn(stripped) }
+                    !isInstaHandleToken && !containsWatermarkSubstring(stripped)
                 }.joinToString(" ")
             }.filter { it.count { c -> c.isLetter() } >= 4 }
 
-            val joined = cleanedLines.distinct().joinToString(" ").replace(Regex("\\s+"), " ").trim()
+            val joined = cleanedLines.distinct().joinToString(" ").trim()
             return if (joined.count { it.isLetter() } >= 4) joined else ""
         }
 
@@ -767,9 +753,55 @@ class VideoIndexer(private val context: Context) {
             }
         }
 
+        val gphotosRoot = File(context.filesDir, "gphotos_albums")
+        if (gphotosRoot.exists()) {
+            gphotosRoot.listFiles()?.forEach { dir ->
+                if (dir.isDirectory) {
+                    val count = dir.listFiles()?.count { it.isFile && it.length() > 0 } ?: 0
+                    if (count > 0) {
+                        val albTitle = "☁️ ${dir.name}"
+                        albums[albTitle] = (albums[albTitle] ?: 0) + count
+                        totalAllCount += count
+                    }
+                }
+            }
+        }
+
+        val allIndexed = try { db.getAllMemes() } catch (_: Exception) { emptyList() }
+        val indexedPathSet = allIndexed.map { it.filePath }.toHashSet()
+        val funnyCount = allIndexed.count { AppStrings.isFunnyOrDownloadedMeme(it) }
+        val speechCount = allIndexed.count { it.isVideo && it.spokenText.isNotBlank() && !OnlineAiAnalyzer.isMusicOrEmptyTranscript(it.spokenText) }
+        val subCount = allIndexed.count { it.screenText.isNotBlank() }
+        val visCount = allIndexed.count { it.visualLabels.isNotBlank() }
+        val customAlbums = AppStrings.getSavedCustomAiAlbums(context)
+
         val result = mutableListOf<AlbumInfo>()
-        result.add(AlbumInfo("🌟 Tüm Galeri (Hepsi)", totalAllCount, isAll = true))
-        result.addAll(albums.map { AlbumInfo(it.key, it.value) }.sortedByDescending { it.count })
+        result.add(AlbumInfo(AppStrings.tr(context).allGalleryLabel, totalAllCount, isAll = true))
+
+        // Kullanıcının oluşturduğu özel AI albümleri her zaman en üstte göster
+        for ((customTitle, paths) in customAlbums) {
+            val activeCount = paths.count { it in indexedPathSet }
+            if (activeCount > 0) {
+                result.add(AlbumInfo(customTitle, activeCount, isAll = false))
+            }
+        }
+
+        val isGooglePhotosMode = AppStrings.getGalleryMode(context) == "gphotos"
+        if (isGooglePhotosMode) {
+            if (funnyCount > 0) result.add(AlbumInfo(AI_ALBUM_FUNNY, funnyCount, isAll = false))
+            if (speechCount > 0) result.add(AlbumInfo(AI_ALBUM_SPEECH, speechCount, isAll = false))
+            if (subCount > 0) result.add(AlbumInfo(AI_ALBUM_SUBTITLE, subCount, isAll = false))
+            if (visCount > 0) result.add(AlbumInfo(AI_ALBUM_VISUAL, visCount, isAll = false))
+            result.addAll(albums.map { AlbumInfo(it.key, it.value) }.sortedByDescending {
+                if (it.name.startsWith("☁️ ")) it.count + 100000 else it.count
+            })
+        } else {
+            if (funnyCount > 0) result.add(AlbumInfo(AI_ALBUM_FUNNY, funnyCount, isAll = false))
+            if (speechCount > 0) result.add(AlbumInfo(AI_ALBUM_SPEECH, speechCount, isAll = false))
+            if (subCount > 0) result.add(AlbumInfo(AI_ALBUM_SUBTITLE, subCount, isAll = false))
+            if (visCount > 0) result.add(AlbumInfo(AI_ALBUM_VISUAL, visCount, isAll = false))
+            result.addAll(albums.map { AlbumInfo(it.key, it.value) }.sortedByDescending { it.count })
+        }
         return@withContext result
     }
 
@@ -777,7 +809,28 @@ class VideoIndexer(private val context: Context) {
 
     private fun queryGalleryMedia(albumInfo: AlbumInfo): List<GalleryMediaItem> {
         val mediaList = mutableListOf<GalleryMediaItem>()
-        val isAll = albumInfo.isAll
+        val gphotosRoot = File(context.filesDir, "gphotos_albums")
+        if (gphotosRoot.exists()) {
+            gphotosRoot.listFiles()?.forEach { dir ->
+                if (dir.isDirectory) {
+                    val albTitle = "☁️ ${dir.name}"
+                    if (albumInfo.isAll || albumInfo.name == albTitle) {
+                        dir.listFiles()?.sortedByDescending { it.lastModified() }?.forEach { f ->
+                            if (f.isFile && f.length() > 0) {
+                                val low = f.name.lowercase()
+                                val isVid = low.endsWith(".mp4") || low.endsWith(".mkv") || low.endsWith(".webm") || low.endsWith(".mov") || low.endsWith(".3gp")
+                                mediaList.add(GalleryMediaItem(f.absolutePath, f.name, isVid, albTitle))
+                            }
+                        }
+                    }
+                }
+            }
+            if (albumInfo.name.startsWith("☁️ ")) {
+                return mediaList
+            }
+        }
+
+        val isAll = albumInfo.isAll || albumInfo.name.startsWith("😂 [AI") || albumInfo.name.startsWith("🗣️ [AI") || albumInfo.name.startsWith("📝 [AI") || albumInfo.name.startsWith("🏷️ [AI") || albumInfo.name.startsWith("🤖 ")
         val selection = if (isAll) null else "${MediaStore.MediaColumns.BUCKET_DISPLAY_NAME} = ?"
         val selectionArgs = if (isAll) null else arrayOf(albumInfo.name)
 

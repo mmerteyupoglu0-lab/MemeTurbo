@@ -121,12 +121,12 @@ object OnlineAiAnalyzer {
         var whisperTranscript = ""
         val aacBytes = indexer.extractCompressedAacForAi(videoFile, maxSeconds = 12)
         if (aacBytes.size > 1200) {
-            whisperTranscript = callGroqWhisper(apiKey, aacBytes, "audio.m4a", "audio/mp4")
+            whisperTranscript = callGroqWhisper(context, apiKey, aacBytes, "audio.m4a", "audio/mp4")
         } else {
             val pcm16k = indexer.extractPcm16kMonoForAi(videoFile, maxSeconds = 12)
             if (pcm16k.size > 6400) {
                 val wavBytes = pcm16kToWavBytes(pcm16k, 16000)
-                whisperTranscript = callGroqWhisper(apiKey, wavBytes, "audio.wav", "audio/wav")
+                whisperTranscript = callGroqWhisper(context, apiKey, wavBytes, "audio.wav", "audio/wav")
             }
         }
 
@@ -334,6 +334,7 @@ object OnlineAiAnalyzer {
     }
 
     private suspend fun callGroqWhisper(
+        context: Context,
         apiKey: String,
         audioBytes: ByteArray,
         fileName: String,
@@ -362,7 +363,9 @@ object OnlineAiAnalyzer {
                     }
 
                     writeField("model", "whisper-large-v3-turbo")
-                    writeField("language", "tr")
+                    if (!AppStrings.isAutoMultiLangAi(context)) {
+                        writeField("language", AppStrings.getLang(context))
+                    }
                     writeField("response_format", "verbose_json")
                     writeField("temperature", "0.0")
 
@@ -660,5 +663,100 @@ object OnlineAiAnalyzer {
         System.arraycopy(header.array(), 0, out, 0, 44)
         System.arraycopy(pcmData, 0, out, 44, pcmData.size)
         return out
+    }
+
+    /**
+     * V17.0 Akıllı AI Albüm Seçici Ajan:
+     * Kullanıcının istediği albüm amacına ("komik ve küfürlü videolar", "oyun videoları", "saçma memeler" vb.)
+     * göre taranmış medyaları semantik olarak değerlendirip eşleşen dosya yollarını döndürür.
+     */
+    suspend fun selectItemsForCustomAiAlbum(
+        context: Context,
+        userGoal: String,
+        allMemes: List<MemeVideo>
+    ): Set<String> = withContext(Dispatchers.IO) {
+        val heuristicMatches = AppStrings.filterMemesForGoalHeuristic(allMemes, userGoal)
+        val matchedPaths = heuristicMatches.map { it.filePath }.toMutableSet()
+
+        if (!isOnline(context) || allMemes.isEmpty()) {
+            return@withContext matchedPaths
+        }
+
+        val apiKey = getApiKey(context)
+        val richCandidates = allMemes.filter {
+            it.spokenText.isNotBlank() || it.screenText.isNotBlank() || it.visualLabels.isNotBlank()
+        }.take(120)
+
+        if (richCandidates.isEmpty()) return@withContext matchedPaths
+
+        val lines = StringBuilder()
+        for ((idx, item) in richCandidates.withIndex()) {
+            val sp = item.spokenText.take(45).replace("\n", " ")
+            val sc = item.screenText.take(45).replace("\n", " ")
+            val vs = item.visualLabels.take(35).replace("\n", " ")
+            val kind = if (item.isVideo) "V" else "F"
+            lines.append("$idx|$kind|${item.albumName.take(12)}|$sp|$sc|$vs\n")
+        }
+
+        val prompt = buildString {
+            append("Kullanıcı galerisinde şu amaçla özel bir AI albümü oluşturmak istiyor: \"$userGoal\"\n")
+            append("Not: Eğer kullanıcı 'komik', 'meme', 'eğlenceli', 'küfürlü' veya 'saçma' videolar istiyorsa; içinde argo/küfür, komik replik, mizah, sosyal medyadan indirilmiş diyalog, oyun veya espri geçen tüm öğeleri seç.\n")
+            append("Aşağıdaki numaralı medya listesinden bu amaca uyanların ID numaralarını JSON olarak döndür:\n")
+            append(lines.toString())
+            append("\nSADECE geçerli bir JSON döndür: {\"ids\":[0, 2, 5]}")
+        }
+
+        var conn: HttpURLConnection? = null
+        try {
+            val url = URL("https://api.groq.com/openai/v1/chat/completions")
+            conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                connectTimeout = 10000
+                readTimeout = 15000
+                setRequestProperty("Authorization", "Bearer $apiKey")
+                setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+            }
+
+            val bodyJson = JSONObject().apply {
+                put("model", "openai/gpt-oss-20b")
+                put("temperature", 0.1)
+                put("max_completion_tokens", 350)
+                put("response_format", JSONObject().apply { put("type", "json_object") })
+                put("messages", JSONArray().apply {
+                    put(JSONObject().apply {
+                        put("role", "user")
+                        put("content", prompt)
+                    })
+                })
+            }
+
+            conn.outputStream.use { os ->
+                os.write(bodyJson.toString().toByteArray(Charsets.UTF_8))
+            }
+
+            if (conn.responseCode == 200) {
+                val resp = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                val content = JSONObject(resp).optJSONArray("choices")
+                    ?.optJSONObject(0)
+                    ?.optJSONObject("message")
+                    ?.optString("content", "") ?: ""
+                val parsed = extractJsonFromText(content)
+                val idsArr = parsed?.optJSONArray("ids")
+                if (idsArr != null) {
+                    for (i in 0 until idsArr.length()) {
+                        val id = idsArr.optInt(i, -1)
+                        if (id in richCandidates.indices) {
+                            matchedPaths.add(richCandidates[id].filePath)
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        } finally {
+            try { conn?.disconnect() } catch (_: Exception) {}
+        }
+
+        matchedPaths
     }
 }
