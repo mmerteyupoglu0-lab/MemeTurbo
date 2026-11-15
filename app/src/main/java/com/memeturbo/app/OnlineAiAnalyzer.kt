@@ -759,4 +759,108 @@ object OnlineAiAnalyzer {
 
         matchedPaths
     }
+
+    /**
+     * V18.0 4x Hızlı Toplu Fotoğraf Çözümleyici:
+     * En fazla 4 fotoğrafı tek bir 2x2 numaralı kolajda birleştirip tek Vision isteğiyle çözer.
+     */
+    suspend fun analyzeImageBatchWithAi(
+        context: Context,
+        imageFiles: List<File>,
+        ocrHints: Map<String, String> = emptyMap()
+    ): Map<String, AiMediaResult> = withContext(Dispatchers.IO) {
+        val resultMap = mutableMapOf<String, AiMediaResult>()
+        if (!isOnline(context) || imageFiles.isEmpty()) return@withContext resultMap
+        if (imageFiles.size == 1) {
+            val f = imageFiles[0]
+            val single = analyzeImageWithAi(context, f, ocrHints[f.absolutePath] ?: "")
+            if (single != null) resultMap[f.absolutePath] = single
+            return@withContext resultMap
+        }
+
+        val apiKey = getApiKey(context)
+        val cellW = 300
+        val cellH = 300
+        val collage = Bitmap.createBitmap(cellW * 2, cellH * 2, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(collage)
+        canvas.drawColor(Color.BLACK)
+        val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+        val labelBg = Paint().apply { color = Color.argb(200, 0, 0, 0) }
+        val labelTxt = Paint().apply {
+            color = Color.YELLOW
+            textSize = 28f
+            isFakeBoldText = true
+            isAntiAlias = true
+        }
+
+        val validFiles = imageFiles.take(4)
+        for ((idx, file) in validFiles.withIndex()) {
+            try {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(file.absolutePath, bounds)
+                var sample = 1
+                while (bounds.outWidth / sample > 400 || bounds.outHeight / sample > 400) sample *= 2
+                val bmp = BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })
+                if (bmp != null) {
+                    val col = idx % 2
+                    val row = idx / 2
+                    val dst = Rect(col * cellW, row * cellH, (col + 1) * cellW, (row + 1) * cellH)
+                    canvas.drawBitmap(bmp, null, dst, paint)
+                    bmp.recycle()
+                    canvas.drawRect((col * cellW).toFloat(), (row * cellH).toFloat(), (col * cellW + 44).toFloat(), (row * cellH + 38).toFloat(), labelBg)
+                    canvas.drawText("${idx + 1}", (col * cellW + 12).toFloat(), (row * cellH + 29).toFloat(), labelTxt)
+                }
+            } catch (_: Exception) {}
+        }
+
+        val out = ByteArrayOutputStream()
+        collage.compress(Bitmap.CompressFormat.JPEG, 76, out)
+        collage.recycle()
+        val collageB64 = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+
+        val prefs = context.getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+        val selfName = prefs.getString("self_person_name", "")?.trim() ?: ""
+        val selfPhotoPath = prefs.getString("self_person_photo", "")?.trim() ?: ""
+        var refBase64 = ""
+        if (selfName.isNotBlank() && selfPhotoPath.isNotBlank()) {
+            val refFile = File(selfPhotoPath)
+            if (refFile.exists()) {
+                refBase64 = encodeImageFileToBase64Jpeg(refFile, maxDim = 360)
+            }
+        }
+        val imagesList = if (refBase64.isNotEmpty()) listOf(collageB64, refBase64) else listOf(collageB64)
+
+        val prompt = buildString {
+            append("1. görselde sol üstte '1', sağ üstte '2', sol altta '3', sağ altta '4' numaralı 4 ayrı fotoğraf var.\n")
+            if (refBase64.isNotEmpty()) {
+                append("2. görsel '$selfName' adlı kişinin referans fotoğrafıdır; hangi karede görünüyorsa açıklamasına '$selfName' adını ekle.\n")
+            }
+            append("Her numara (1..${validFiles.size}) için fotoğraftaki anlamlı yazıyı 'subtitle' (yoksa boş), ortam/yapı/oyun/kişi/nesneyi 4-8 Türkçe kelimeyle 'scene' alanına yaz.\n")
+            append("SADECE geçerli JSON döndür: {\"items\":[{\"id\":1,\"subtitle\":\"...\",\"scene\":\"...\"}]}")
+        }
+
+        val parsed = callGroqVisionJson(apiKey, imagesList, prompt)
+        val arr = parsed?.optJSONArray("items")
+        if (arr != null) {
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val id = obj.optInt("id", 0)
+                if (id in 1..validFiles.size) {
+                    val f = validFiles[id - 1]
+                    val sub = VideoIndexer.filterWatermarks(obj.optString("subtitle", "").trim())
+                    val scene = obj.optString("scene", "").trim()
+                    val finalSub = if (sub.isNotBlank()) sub else (ocrHints[f.absolutePath] ?: "")
+                    if (finalSub.isNotBlank() || scene.isNotBlank()) {
+                        resultMap[f.absolutePath] = AiMediaResult(
+                            spokenText = "",
+                            screenText = finalSub,
+                            visualLabels = if (scene.isNotBlank()) "🖼️ $scene" else "",
+                            durationMs = 0L
+                        )
+                    }
+                }
+            }
+        }
+        resultMap
+    }
 }

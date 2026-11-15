@@ -1,6 +1,3 @@
-import java.io.FileOutputStream
-import java.net.URI
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -15,8 +12,8 @@ android {
         applicationId = "com.memeturbo.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 27
-        versionName = "3.7.0"
+        versionCode = 28
+        versionName = "3.8.0"
     }
 
     signingConfigs {
@@ -38,10 +35,6 @@ android {
         }
     }
 
-    androidResources {
-        noCompress += listOf("zip", "mdl", "fst", "conf", "stats", "dubm", "ie", "mat", "int")
-    }
-
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -49,28 +42,6 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
-}
-
-val downloadVoskModel by tasks.registering {
-    doLast {
-        val assetsDir = file("src/main/assets")
-        if (!assetsDir.exists()) assetsDir.mkdirs()
-        val zipFile = file("src/main/assets/vosk_tr.zip")
-        if (!zipFile.exists() || zipFile.length() < 10_000_000L) {
-            println("Türkçe Vosk Ses Modeli indiriliyor (vosk-model-small-tr-0.3.zip)...")
-            val url = URI("https://alphacephei.com/vosk/models/vosk-model-small-tr-0.3.zip").toURL()
-            url.openStream().use { input ->
-                FileOutputStream(zipFile).use { output ->
-                    input.copyTo(output)
-                }
-            }
-            println("Vosk Türkçe modeli başarıyla indirildi: ${zipFile.length()} byte")
-        }
-    }
-}
-
-tasks.matching { it.name == "preBuild" || it.name.contains("Assets") }.configureEach {
-    dependsOn(downloadVoskModel)
 }
 
 dependencies {
@@ -91,9 +62,6 @@ dependencies {
 
     implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation("com.google.mlkit:image-labeling:17.0.9")
-
-    implementation("com.alphacephei:vosk-android:0.3.47")
-    implementation("net.java.dev.jna:jna:5.13.0@aar")
 
     implementation("androidx.work:work-runtime-ktx:2.9.0")
 }

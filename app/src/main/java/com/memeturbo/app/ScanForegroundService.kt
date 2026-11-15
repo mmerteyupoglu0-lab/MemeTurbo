@@ -13,7 +13,6 @@ import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
-import org.vosk.Model
 import java.io.File
 
 class ScanForegroundService : Service() {
@@ -21,7 +20,6 @@ class ScanForegroundService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var currentJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
-    private var voskModel: Model? = null
 
     data class ScanState(
         val isRunning: Boolean = false,
@@ -68,7 +66,7 @@ class ScanForegroundService : Service() {
                 val albumName = intent.getStringExtra(EXTRA_ALBUM_NAME) ?: "🌟 Tüm Galeri (Hepsi)"
                 val isAll = intent.getBooleanExtra(EXTRA_ALBUM_IS_ALL, true)
                 val forceFull = intent.getBooleanExtra(EXTRA_FORCE_FULL_ALBUM, false)
-                startForegroundSafe("🌐 Çoklu Ajan AI çözümleme çalışıyor...")
+                startForegroundSafe("🌐 4x Hızlı AI Çözümleme çalışıyor...")
                 runVoiceRepair(VideoIndexer.AlbumInfo(albumName, 0, isAll), forceFull)
             }
             ACTION_PAUSE_RESUME -> {
@@ -120,13 +118,6 @@ class ScanForegroundService : Service() {
                 wakeLock?.release()
             }
         } catch (_: Exception) {}
-    }
-
-    private suspend fun ensureVoskModel(indexer: VideoIndexer): Model? {
-        if (voskModel != null) return voskModel
-        stateFlow.value = stateFlow.value.copy(statusMessage = "📦 Türkçe ses modeli hazırlanıyor...")
-        voskModel = indexer.getOrInitVoskModel()
-        return voskModel
     }
 
     private suspend fun waitIfPaused() {
@@ -189,8 +180,6 @@ class ScanForegroundService : Service() {
                 }
                 stateFlow.value = stateFlow.value.copy(refreshTick = stateFlow.value.refreshTick + 1)
 
-                val model = if (!OnlineAiAnalyzer.isOnline(this@ScanForegroundService)) ensureVoskModel(indexer) else voskModel
-
                 newItems.forEachIndexed { index, item ->
                     if (isStoppedFlag) return@forEachIndexed
                     waitIfPaused()
@@ -212,7 +201,7 @@ class ScanForegroundService : Service() {
                     if (file.exists()) {
                         try {
                             val metadata = if (item.isVideo) {
-                                indexer.extractVideoData(file, model, item.albumName)
+                                indexer.extractVideoData(file, item.albumName)
                             } else {
                                 indexer.extractImageData(file, item.albumName)
                             }
@@ -224,11 +213,11 @@ class ScanForegroundService : Service() {
                         }
                     }
 
-                    if (curNum % 20 == 0) {
+                    if (curNum % 16 == 0) {
                         prefs.edit().putStringSet("ai_checked_paths_v15", aiCheckedSet).apply()
                         stateFlow.value = stateFlow.value.copy(refreshTick = stateFlow.value.refreshTick + 1)
                     }
-                    delay(20)
+                    delay(15)
                 }
 
                 prefs.edit().putStringSet("ai_checked_paths_v15", aiCheckedSet).apply()
@@ -260,19 +249,12 @@ class ScanForegroundService : Service() {
             try {
                 stateFlow.value = ScanState(isRunning = true, statusMessage = "🌐 AI çözümleme listesi hazırlanıyor...")
 
-                val onlineAvailable = OnlineAiAnalyzer.isOnline(this@ScanForegroundService)
-                val model = if (!onlineAvailable) ensureVoskModel(indexer) else voskModel
-
                 val editedPaths = prefs.getStringSet("user_edited_paths", emptySet()) ?: emptySet()
 
                 val allItems = db.getAllMemes().let { list ->
                     if (albumInfo.isAll) list else list.filter { it.albumName == albumInfo.name }
                 }
 
-                // V15.0 Kesin Tekrar Önleme:
-                // - Elle (✏️) düzenlediklerine ASLA dokunma.
-                // - AI+Görsel tarafından daha önce kontrol edilmiş (aiCheckedSet) VEYA zaten iyi metni olanlara
-                //   "Eksik & Zayıfları Çöz" modunda bir daha ASLA dokunma!
                 val targetItems = allItems.filter { item ->
                     if (item.filePath in editedPaths) return@filter false
                     if (forceFullAlbum) return@filter true
@@ -295,36 +277,36 @@ class ScanForegroundService : Service() {
                 }
 
                 val total = targetItems.size
-
                 if (total == 0) {
                     stateFlow.value = ScanState(
                         isRunning = false,
-                        statusMessage = "✅ Seçili albümde eksik veya zayıf medya kalmadı!",
+                        statusMessage = "✅ Seçili albümde eksik medya kalmadı!",
                         refreshTick = stateFlow.value.refreshTick + 1
                     )
                     return@launch
                 }
 
-                targetItems.forEachIndexed { idx, item ->
-                    if (isStoppedFlag) return@forEachIndexed
+                val targetVideos = targetItems.filter { it.isVideo }
+                val targetImages = targetItems.filter { !it.isVideo }
+                var processedCount = 0
+
+                // 1) Videoları tek tek hızlı Whisper+Logic ile işle
+                for (item in targetVideos) {
+                    if (isStoppedFlag) break
                     waitIfPaused()
-                    if (isStoppedFlag) return@forEachIndexed
+                    if (isStoppedFlag) break
 
+                    processedCount++
                     val file = File(item.filePath)
-                    val curNum = idx + 1
                     val shortName = VideoIndexer.cleanFileNameForDisplay(item.fileName).ifEmpty { item.fileName.take(20) }
-                    val modeTag = if (OnlineAiAnalyzer.isOnline(this@ScanForegroundService)) "🌐 AI+Görsel" else "🔧 Çevrimdışı"
-                    val msg = "$modeTag ($curNum/$total): $shortName"
-
+                    val msg = "🌐 AI Video ($processedCount/$total): $shortName"
                     stateFlow.value = stateFlow.value.copy(
                         isRunning = true,
-                        current = curNum,
+                        current = processedCount,
                         total = total,
                         statusMessage = msg
                     )
-                    if (curNum == 1 || curNum % 3 == 0) {
-                        updateNotification(msg)
-                    }
+                    if (processedCount == 1 || processedCount % 4 == 0) updateNotification(msg)
 
                     if (file.exists()) {
                         try {
@@ -333,12 +315,7 @@ class ScanForegroundService : Service() {
                                 !OnlineAiAnalyzer.isMusicOrEmptyTranscript(oldSpoken) &&
                                 !VideoIndexer.isWeakSpokenFiller(oldSpoken)
 
-                            val fresh = if (item.isVideo) {
-                                indexer.extractVideoData(file, model, item.albumName)
-                            } else {
-                                indexer.extractImageData(file, item.albumName)
-                            }
-
+                            val fresh = indexer.extractVideoData(file, item.albumName)
                             val newSpoken = fresh.spokenText.replace("\u200B", "").trim()
                             val finalSpoken = when {
                                 !OnlineAiAnalyzer.isMusicOrEmptyTranscript(newSpoken) && !VideoIndexer.isWeakSpokenFiller(newSpoken) -> newSpoken
@@ -347,35 +324,68 @@ class ScanForegroundService : Service() {
                                 !OnlineAiAnalyzer.isMusicOrEmptyTranscript(oldSpoken) && oldSpoken.isNotBlank() -> oldSpoken
                                 else -> ""
                             }
-
                             val oldScreen = VideoIndexer.filterWatermarks(item.screenText)
                             val finalScreen = fresh.screenText.ifBlank { oldScreen }
                             val finalVisual = fresh.visualLabels.ifBlank { VideoIndexer.cleanVisualLabelsString(item.visualLabels) }
 
-                            db.updateFields(
-                                path = item.filePath,
-                                spokenText = finalSpoken,
-                                screenText = finalScreen,
-                                visualLabels = finalVisual
-                            )
+                            db.updateFields(item.filePath, finalSpoken, finalScreen, finalVisual)
                             aiCheckedSet.add(item.filePath)
                             VideoIndexer.invalidateCacheFor(item.filePath)
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                        }
+                        } catch (_: Exception) {}
                     }
-
-                    if (curNum % 6 == 0) {
+                    if (processedCount % 6 == 0) {
                         prefs.edit().putStringSet("ai_checked_paths_v15", aiCheckedSet).apply()
                         stateFlow.value = stateFlow.value.copy(refreshTick = stateFlow.value.refreshTick + 1)
                     }
-                    delay(25)
+                    delay(20)
+                }
+
+                // 2) Fotoğrafları 4'lü kolajlar halinde 4x hızlı çöz!
+                val imgChunks = targetImages.chunked(4)
+                for (chunk in imgChunks) {
+                    if (isStoppedFlag) break
+                    waitIfPaused()
+                    if (isStoppedFlag) break
+
+                    val validFiles = chunk.map { File(it.filePath) }.filter { it.exists() }
+                    val hints = chunk.associate { it.filePath to VideoIndexer.filterWatermarks(it.screenText) }
+
+                    val msg = "🌐 4x AI Fotoğraf (${processedCount + 1}..${minOf(processedCount + chunk.size, total)}/$total)"
+                    stateFlow.value = stateFlow.value.copy(
+                        isRunning = true,
+                        current = processedCount,
+                        total = total,
+                        statusMessage = msg
+                    )
+                    updateNotification(msg)
+
+                    val batchRes = if (validFiles.isNotEmpty()) {
+                        OnlineAiAnalyzer.analyzeImageBatchWithAi(this@ScanForegroundService, validFiles, hints)
+                    } else {
+                        emptyMap()
+                    }
+
+                    for (item in chunk) {
+                        processedCount++
+                        val res = batchRes[item.filePath]
+                        if (res != null) {
+                            val finalScreen = res.screenText.ifBlank { VideoIndexer.filterWatermarks(item.screenText) }
+                            val finalVisual = res.visualLabels.ifBlank { VideoIndexer.cleanVisualLabelsString(item.visualLabels) }
+                            db.updateFields(item.filePath, item.spokenText, finalScreen, finalVisual)
+                        }
+                        aiCheckedSet.add(item.filePath)
+                        VideoIndexer.invalidateCacheFor(item.filePath)
+                    }
+
+                    prefs.edit().putStringSet("ai_checked_paths_v15", aiCheckedSet).apply()
+                    stateFlow.value = stateFlow.value.copy(refreshTick = stateFlow.value.refreshTick + 1)
+                    delay(30)
                 }
 
                 prefs.edit().putStringSet("ai_checked_paths_v15", aiCheckedSet).apply()
                 stateFlow.value = ScanState(
                     isRunning = false,
-                    statusMessage = "✅ $total medya AI + Görsel Tanıma ile güncellendi!",
+                    statusMessage = "✅ $total medya AI ile güncellendi!",
                     refreshTick = stateFlow.value.refreshTick + 1
                 )
             } catch (_: CancellationException) {

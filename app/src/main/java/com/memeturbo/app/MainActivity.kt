@@ -48,7 +48,7 @@ import kotlin.math.abs
 class MainActivity : AppCompatActivity() {
 
     private lateinit var statusText: TextView
-    private lateinit var albumSpinner: Spinner
+    private lateinit var albumPickerBtn: Button
     private lateinit var swipeRefresh: SwipeRefreshLayout
     private lateinit var galleryRecycler: RecyclerView
     private lateinit var gridLayoutManager: GridLayoutManager
@@ -63,7 +63,6 @@ class MainActivity : AppCompatActivity() {
     private var lastObservedTick = -1
     private var cachedAllMemes: List<MemeVideo>? = null
     private var currentFilteredList: List<MemeVideo> = emptyList()
-    private var suppressNextSpinnerSelection = false
 
     private lateinit var scanControlRow: LinearLayout
     private lateinit var pauseResumeBtn: Button
@@ -116,6 +115,33 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+
+    private val pickWallpaperLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            lifecycleScope.launch {
+                val savedPath = withContext(Dispatchers.IO) {
+                    try {
+                        val dest = File(filesDir, "custom_wallpaper.jpg")
+                        contentResolver.openInputStream(uri)?.use { input ->
+                            FileOutputStream(dest).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                        dest.absolutePath
+                    } catch (_: Exception) { "" }
+                }
+                if (savedPath.isNotBlank()) {
+                    getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+                        .edit()
+                        .putString("ui_wallpaper_path", savedPath)
+                        .apply()
+                    Toast.makeText(this@MainActivity, "🖼️ Özel arka plan duvar kağıdı uygulandı!", Toast.LENGTH_SHORT).show()
+                    recreate()
+                }
+            }
+        }
+    }
+
     private var pendingGPhotosAlbumName: String = "Google Foto Memeler"
 
     private val pickGPhotosLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -139,9 +165,39 @@ class MainActivity : AppCompatActivity() {
 
         val theme = AppStrings.getTheme(this)
         val strings = AppStrings.tr(this)
+        val glassAlpha = AppStrings.getGlassAlpha(this)
+        val wallpaperPath = AppStrings.getWallpaperPath(this)
 
         val root = FrameLayout(this).apply {
             setBackgroundColor(theme.bgHex)
+        }
+
+        if (wallpaperPath.isNotBlank() && File(wallpaperPath).exists()) {
+            val wpView = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            }
+            val scrim = View(this).apply {
+                setBackgroundColor(Color.parseColor("#55000000"))
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            }
+            root.addView(wpView)
+            root.addView(scrim)
+            lifecycleScope.launch {
+                val bmp = withContext(Dispatchers.IO) {
+                    try {
+                        val b = BitmapFactory.Options().apply { inSampleSize = 2 }
+                        BitmapFactory.decodeFile(wallpaperPath, b)
+                    } catch (_: Exception) { null }
+                }
+                if (bmp != null) wpView.setImageBitmap(bmp)
+            }
         }
 
         val mainContainer = LinearLayout(this).apply {
@@ -150,8 +206,8 @@ class MainActivity : AppCompatActivity() {
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dpToPx(16f), dpToPx(14f), dpToPx(16f), dpToPx(10f))
-            setBackgroundColor(theme.headerHex)
+            setPadding(dpToPx(14f), dpToPx(12f), dpToPx(14f), dpToPx(8f))
+            setBackgroundColor(AppStrings.withAlpha(theme.headerHex, glassAlpha))
         }
 
         val titleRow = LinearLayout(this).apply {
@@ -160,8 +216,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         val title = TextView(this).apply {
-            text = "⚡ ReplikBul • MemeTurbo V17"
-            textSize = 19f
+            text = "⚡ ReplikBul • MemeTurbo V18"
+            textSize = 18.5f
             setTextColor(Color.WHITE)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
@@ -265,13 +321,20 @@ class MainActivity : AppCompatActivity() {
             setPadding(dpToPx(16f), dpToPx(10f), dpToPx(16f), dpToPx(6f))
         }
 
-        albumSpinner = Spinner(this).apply {
+        albumPickerBtn = Button(this).apply {
+            text = "📁 Albümler ▾"
+            textSize = 11.5f
+            setTextColor(Color.WHITE)
+            isAllCaps = false
+            maxLines = 1
+            setPadding(dpToPx(10f), 0, dpToPx(10f), 0)
             background = GradientDrawable().apply {
                 cornerRadius = dpToPx(12f).toFloat()
-                setColor(Color.parseColor("#1E293B"))
+                setColor(AppStrings.withAlpha(theme.cardHex, glassAlpha))
                 setStroke(dpToPx(1f), Color.parseColor("#475569"))
             }
-            layoutParams = LinearLayout.LayoutParams(0, dpToPx(40f), 1.4f).apply { rightMargin = dpToPx(6f) }
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(38f), 1.45f).apply { rightMargin = dpToPx(6f) }
+            setOnClickListener { showButtonAlbumPickerDialog() }
         }
 
         val scanBtn = Button(this).apply {
@@ -300,7 +363,7 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { startRepairService() }
         }
 
-        scanRow.addView(albumSpinner)
+        scanRow.addView(albumPickerBtn)
         scanRow.addView(scanBtn)
         scanRow.addView(repairBtn)
         mainContainer.addView(scanRow)
@@ -376,8 +439,8 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
             background = GradientDrawable().apply {
                 cornerRadius = dpToPx(16f).toFloat()
-                setColor(Color.parseColor("#1E293B"))
-                setStroke(dpToPx(1f), Color.parseColor("#334155"))
+                setColor(AppStrings.withAlpha(theme.cardHex, glassAlpha))
+                setStroke(dpToPx(1f), AppStrings.withAlpha(theme.cardStrokeHex, 0.85f))
             }
             setPadding(dpToPx(14f), dpToPx(2f), dpToPx(10f), dpToPx(2f))
             layoutParams = LinearLayout.LayoutParams(
@@ -795,104 +858,352 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun showButtonAlbumPickerDialog() {
+        val theme = AppStrings.getTheme(this)
+        val scroll = ScrollView(this)
+        val listLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(14f), dpToPx(10f), dpToPx(14f), dpToPx(10f))
+        }
+        scroll.addView(listLayout)
+
+        var dialogRef: AlertDialog? = null
+
+        val albumsToShow = availableAlbums.ifEmpty {
+            listOf(VideoIndexer.AlbumInfo(AppStrings.tr(this).allGalleryLabel, 0, isAll = true))
+        }
+
+        for (alb in albumsToShow) {
+            val isSelected = (selectedAlbumFilter == null && alb.isAll) || (selectedAlbumFilter == alb.name)
+            val btn = Button(this).apply {
+                text = if (isSelected) "✅ ${alb.name} (${alb.count})" else "📁 ${alb.name} (${alb.count})"
+                textSize = 13f
+                isAllCaps = false
+                gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                setTextColor(Color.WHITE)
+                setPadding(dpToPx(14f), dpToPx(8f), dpToPx(14f), dpToPx(8f))
+                background = GradientDrawable().apply {
+                    cornerRadius = dpToPx(12f).toFloat()
+                    setColor(if (isSelected) theme.accentHex else theme.cardHex)
+                    setStroke(dpToPx(1f), if (isSelected) Color.parseColor("#38BDF8") else theme.cardStrokeHex)
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dpToPx(7f) }
+                setOnClickListener {
+                    selectedAlbumFilter = if (alb.isAll) null else alb.name
+                    updateAlbumButtonLabel()
+                    dialogRef?.dismiss()
+                    filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false, immediate = true)
+                }
+            }
+            listLayout.addView(btn)
+        }
+
+        dialogRef = AlertDialog.Builder(this)
+            .setTitle("📁 Albüm Seç (Butonlu Liste)")
+            .setView(scroll)
+            .setNegativeButton("Kapat", null)
+            .create()
+        dialogRef.show()
+    }
+
+    private fun updateAlbumButtonLabel() {
+        val active = availableAlbums.firstOrNull {
+            (selectedAlbumFilter == null && it.isAll) || it.name == selectedAlbumFilter
+        }
+        albumPickerBtn.text = if (active == null || active.isAll) {
+            "🌟 Tümü (${active?.count ?: 0}) ▾"
+        } else {
+            val shortName = if (active.name.length > 13) active.name.take(12) + ".." else active.name
+            "$shortName (${active.count}) ▾"
+        }
+    }
+
+    private fun showStepByStepPermissionsDialog() {
+        val theme = AppStrings.getTheme(this)
+        val hasMediaPerm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_VIDEO) == PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+        }
+        val hasOverlay = Settings.canDrawOverlays(this)
+
+        val scroll = ScrollView(this)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(16f), dpToPx(10f), dpToPx(16f), dpToPx(10f))
+        }
+        scroll.addView(box)
+
+        fun addStepCard(stepTitle: String, stepDesc: String, btnText: String, isDone: Boolean, onClick: () -> Unit) {
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dpToPx(12f), dpToPx(10f), dpToPx(12f), dpToPx(10f))
+                background = GradientDrawable().apply {
+                    cornerRadius = dpToPx(14f).toFloat()
+                    setColor(theme.cardHex)
+                    setStroke(dpToPx(1f), if (isDone) Color.parseColor("#16A34A") else theme.cardStrokeHex)
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dpToPx(10f) }
+            }
+            val t = TextView(this).apply {
+                text = if (isDone) "$stepTitle  ✅" else stepTitle
+                textSize = 13.5f
+                setTextColor(Color.WHITE)
+            }
+            val d = TextView(this).apply {
+                text = stepDesc
+                textSize = 11.5f
+                setTextColor(Color.parseColor("#94A3B8"))
+                setPadding(0, dpToPx(4f), 0, dpToPx(8f))
+            }
+            val b = Button(this).apply {
+                text = btnText
+                textSize = 12f
+                isAllCaps = false
+                setTextColor(Color.WHITE)
+                background = GradientDrawable().apply {
+                    cornerRadius = dpToPx(10f).toFloat()
+                    setColor(if (isDone) Color.parseColor("#16A34A") else theme.accentHex)
+                }
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(36f))
+                setOnClickListener { onClick() }
+            }
+            card.addView(t)
+            card.addView(d)
+            card.addView(b)
+            box.addView(card)
+        }
+
+        addStepCard(
+            "1. Adım: Galeri & Fotoğraf Erişim İzni",
+            "Videolarını ve fotoğraflarını tarayıp arayabilmesi için medya izni gerekir.",
+            if (hasMediaPerm) "✅ Galeri İzni Verildi" else "🔓 Galeri İznini Ver",
+            hasMediaPerm
+        ) {
+            checkPermissionAndLoadAlbums()
+        }
+
+        addStepCard(
+            "2. Adım: Yüzen Pencere (Üstte Gösterme)",
+            "WhatsApp / Instagram içinde klavyeye çift tıklayınca MemeTurbo panelinin açılmasını sağlar.",
+            if (hasOverlay) "✅ Yüzen Pencere Açık" else "🔓 Yüzen Pencere İzni Aç",
+            hasOverlay
+        ) {
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+        }
+
+        addStepCard(
+            "3. Adım: Kısıtlanmış Ayarlar (Xiaomi / Samsung / Android 13+)",
+            "Erişilebilirlik açılmıyorsa: Uygulama Bilgisi sayfasına git -> Sağ üst 3 noktaya (veya en alta) bas -> 'Kısıtlanmış ayarlara izin ver' seçeneğini onayla.",
+            "⚙️ Uygulama Bilgisi (Kısıtlı Ayarları Aç)",
+            false
+        ) {
+            try {
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.parse("package:$packageName")
+                })
+            } catch (_: Exception) {}
+        }
+
+        addStepCard(
+            "4. Adım: Çift Tık Klavye Tetikleyici (Erişilebilirlik)",
+            "Ayarlar -> Erişilebilirlik -> İndirilen Uygulamalar / Yüklü Hizmetler -> MemeTurbo'yu AÇ.",
+            "🚀 Erişilebilirlik Ayarlarına Git",
+            false
+        ) {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("🛡️ Adım Adım İzin & Kurulum Rehberi")
+            .setView(scroll)
+            .setNegativeButton("Kapat", null)
+            .show()
+    }
+
     private fun showSettingsDialog() {
         val prefs = getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
         val strings = AppStrings.tr(this)
-        val curTheme = AppStrings.getTheme(this)
+        val theme = AppStrings.getTheme(this)
         val curCols = AppStrings.getGridColumns(this)
         val curCompact = AppStrings.isCompactGalleryCard(this)
-        val curMode = if (AppStrings.getGalleryMode(this) == "gphotos") "🌈 Google Fotoğraflar Modu" else "📱 Telefon Galerisi Modu"
-        val curLang = AppStrings.getLang(this).uppercase()
+        val curMode = AppStrings.getGalleryMode(this)
+        val curLang = AppStrings.getLang(this)
         val autoMultiLang = AppStrings.isAutoMultiLangAi(this)
-        val overlayOk = Settings.canDrawOverlays(this)
+        val hasWp = AppStrings.getWallpaperPath(this).isNotBlank()
+        val glassPct = (prefs.getFloat("ui_glass_alpha", 0.72f) * 100).toInt()
 
-        val options = arrayOf(
-            "1. Galeri Kaynağı: $curMode (Değiştir)",
-            "2. Arayüz Teması: ${curTheme.nameTr}",
-            "3. Izgara Sütun Sayısı: $curCols Sütun (1 / 2 / 3 Sütun)",
-            "4. Kart Görünüm Stili: ${if (curCompact) "Kompakt Galeri" else "Modern Rozetli Kart"}",
-            "5. Uygulama Dili (8 Global Dil): $curLang",
-            "6. AI Ses Dil Algılama: ${if (autoMultiLang) "🌍 Otomatik Çoklu Dil (TR+EN+Global)" else "🇹🇷 Sadece Seçili Dil"}",
-            "7. Yüzen Pencere İzni: ${if (overlayOk) "✅ Açık" else "⚠️ İzin Ver"}",
-            "8. Çift Tık Klavye İzni (Erişilebilirlik Ayarı)",
-            "9. ☁️ Google Fotoğraflar'dan Medya / Albüm İçe Aktar"
-        )
+        val scroll = ScrollView(this)
+        val rootBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(14f), dpToPx(8f), dpToPx(14f), dpToPx(10f))
+        }
+        scroll.addView(rootBox)
 
-        AlertDialog.Builder(this)
-            .setTitle(strings.settingsTitle)
-            .setItems(options) { _, which ->
-                when (which) {
-                    0 -> showOnboardingGalleryChoiceDialog(forceShow = true)
-                    1 -> {
-                        val themeNames = AppStrings.themes.map { it.nameTr }.toTypedArray()
-                        AlertDialog.Builder(this)
-                            .setTitle("🎨 Arayüz Teması Seç")
-                            .setItems(themeNames) { _, idx ->
-                                prefs.edit().putInt("ui_theme_id", idx).apply()
-                                recreate()
-                            }
-                            .show()
-                    }
-                    2 -> {
-                        val colOptions = arrayOf(
-                            "1 Sütun (Sinematik Büyük Görünüm)",
-                            "2 Sütun (Standart Modern Meme Izgarası)",
-                            "3 Sütun (Google Fotoğraflar / Kompakt Galeri Izgarası)"
-                        )
-                        AlertDialog.Builder(this)
-                            .setTitle("📐 Sütun Sayısı Seç")
-                            .setItems(colOptions) { _, idx ->
-                                prefs.edit().putInt("ui_grid_columns", idx + 1).apply()
-                                recreate()
-                            }
-                            .show()
-                    }
-                    3 -> {
-                        prefs.edit().putBoolean("ui_compact_card", !curCompact).apply()
-                        recreate()
-                    }
-                    4 -> {
-                        val langs = arrayOf(
-                            "🇹🇷 Türkçe (TR)" to "tr",
-                            "🇬🇧 English (EN)" to "en",
-                            "🇫🇷 Français (FR)" to "fr",
-                            "🇮🇹 Italiano (IT)" to "it",
-                            "🇪🇸 Español (ES)" to "es",
-                            "🇷🇺 Русский (RU)" to "ru",
-                            "🇩🇪 Deutsch (DE)" to "de",
-                            "🇸🇦 العربية (AR)" to "ar"
-                        )
-                        AlertDialog.Builder(this)
-                            .setTitle("🌍 Global Dil Seçimi")
-                            .setItems(langs.map { it.first }.toTypedArray()) { _, idx ->
-                                prefs.edit().putString("app_lang", langs[idx].second).apply()
-                                recreate()
-                            }
-                            .show()
-                    }
-                    5 -> {
-                        val nextVal = !autoMultiLang
-                        prefs.edit().putBoolean("ai_auto_multilang", nextVal).apply()
-                        val msg = if (nextVal) {
-                            "🌍 Otomatik Çoklu Dil aktif! Türkçe, İngilizce ve diğer dillerdeki videolar otomatik algılanır."
-                        } else {
-                            "🇹🇷 Sabit dil modu aktif!"
-                        }
-                        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-                    }
-                    6 -> {
-                        if (!Settings.canDrawOverlays(this)) {
-                            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-                        } else {
-                            Toast.makeText(this, "✅ Yüzen pencere izni zaten açık!", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                    7 -> showXiaomiPermissionGuide()
-                    8 -> showGooglePhotosImportDialog()
+        var dialogRef: AlertDialog? = null
+
+        fun addSectionTitle(txt: String) {
+            rootBox.addView(TextView(this).apply {
+                text = txt
+                textSize = 12.5f
+                setTextColor(Color.parseColor("#38BDF8"))
+                setPadding(0, dpToPx(8f), 0, dpToPx(5f))
+            })
+        }
+
+        fun makePillBtn(label: String, isActive: Boolean, weight: Float = 1f, customColor: Int? = null, onClick: () -> Unit): Button {
+            return Button(this).apply {
+                text = label
+                textSize = 11f
+                isAllCaps = false
+                setTextColor(Color.WHITE)
+                setPadding(dpToPx(6f), 0, dpToPx(6f), 0)
+                background = GradientDrawable().apply {
+                    cornerRadius = dpToPx(10f).toFloat()
+                    setColor(customColor ?: if (isActive) theme.accentHex else theme.cardHex)
+                    setStroke(dpToPx(if (isActive) 1.8f else 1f), if (isActive) Color.parseColor("#38BDF8") else theme.cardStrokeHex)
                 }
+                layoutParams = LinearLayout.LayoutParams(0, dpToPx(36f), weight).apply {
+                    setMargins(dpToPx(3f), 0, dpToPx(3f), 0)
+                }
+                setOnClickListener { onClick() }
             }
+        }
+
+        // 1. Galeri Modu
+        addSectionTitle("📂 Galeri Modu")
+        val modeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        modeRow.addView(makePillBtn("📱 Klasör Modu", curMode == "device") {
+            prefs.edit().putString("gallery_source_mode", "device").apply()
+            selectedAlbumFilter = null
+            dialogRef?.dismiss()
+            recreate()
+        })
+        modeRow.addView(makePillBtn("🌈 Google Fotoğraflar", curMode == "gphotos") {
+            prefs.edit().putString("gallery_source_mode", "gphotos").apply()
+            selectedAlbumFilter = VideoIndexer.AI_ALBUM_FUNNY
+            dialogRef?.dismiss()
+            recreate()
+        })
+        rootBox.addView(modeRow)
+
+        // 2. Özel Arka Plan (Duvar Kağıdı) & Cam Saydamlığı
+        addSectionTitle("🖼️ Özel Arka Plan & Saydam Cam Efekti")
+        val wpRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        wpRow.addView(makePillBtn("🖼️ Duvar Kağıdı Seç", hasWp, 1.3f) {
+            dialogRef?.dismiss()
+            pickWallpaperLauncher.launch("image/*")
+        })
+        wpRow.addView(makePillBtn("💧 Cam: %$glassPct", hasWp, 1f) {
+            val nextAlpha = when {
+                glassPct <= 55 -> 0.72f
+                glassPct <= 75 -> 0.85f
+                else -> 0.50f
+            }
+            prefs.edit().putFloat("ui_glass_alpha", nextAlpha).apply()
+            dialogRef?.dismiss()
+            recreate()
+        })
+        if (hasWp) {
+            wpRow.addView(makePillBtn("🗑️", false, 0.5f, Color.parseColor("#DC2626")) {
+                prefs.edit().remove("ui_wallpaper_path").apply()
+                dialogRef?.dismiss()
+                recreate()
+            })
+        }
+        rootBox.addView(wpRow)
+
+        // 3. Tema Seçimi
+        addSectionTitle("🎨 Renk Teması")
+        val themeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val curThemeId = prefs.getInt("ui_theme_id", 0)
+        for ((idx, pal) in AppStrings.themes.withIndex()) {
+            themeRow.addView(makePillBtn(pal.nameTr, curThemeId == idx, 1f, pal.accentHex) {
+                prefs.edit().putInt("ui_theme_id", idx).apply()
+                dialogRef?.dismiss()
+                recreate()
+            })
+        }
+        rootBox.addView(themeRow)
+
+        // 4. Izgara Sütun & Kart Stili
+        addSectionTitle("📐 Galeri Düzeni & Kart Boyutu")
+        val gridRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        gridRow.addView(makePillBtn("1 Sütun", curCols == 1) {
+            prefs.edit().putInt("ui_grid_columns", 1).apply()
+            dialogRef?.dismiss(); recreate()
+        })
+        gridRow.addView(makePillBtn("2 Sütun", curCols == 2) {
+            prefs.edit().putInt("ui_grid_columns", 2).apply()
+            dialogRef?.dismiss(); recreate()
+        })
+        gridRow.addView(makePillBtn("3 Sütun", curCols == 3) {
+            prefs.edit().putInt("ui_grid_columns", 3).apply()
+            dialogRef?.dismiss(); recreate()
+        })
+        gridRow.addView(makePillBtn(if (curCompact) "Kompakt ✅" else "Kompakt", curCompact) {
+            prefs.edit().putBoolean("ui_compact_card", !curCompact).apply()
+            dialogRef?.dismiss(); recreate()
+        })
+        rootBox.addView(gridRow)
+
+        // 5. Global Dil Seçimi (8 Dil)
+        addSectionTitle("🌍 Global Dil (8 Dil) & AI Ses Algılama")
+        val langRow1 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dpToPx(5f) }
+        }
+        val langRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val langs = listOf(
+            "🇹🇷 TR" to "tr", "🇬🇧 EN" to "en", "🇫🇷 FR" to "fr", "🇮🇹 IT" to "it",
+            "🇪🇸 ES" to "es", "🇷🇺 RU" to "ru", "🇩🇪 DE" to "de", "🇸🇦 AR" to "ar"
+        )
+        for ((i, pair) in langs.withIndex()) {
+            val btn = makePillBtn(pair.first, curLang == pair.second) {
+                prefs.edit().putString("app_lang", pair.second).apply()
+                dialogRef?.dismiss(); recreate()
+            }
+            if (i < 4) langRow1.addView(btn) else langRow2.addView(btn)
+        }
+        rootBox.addView(langRow1)
+        rootBox.addView(langRow2)
+
+        val aiLangRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dpToPx(6f) }
+        }
+        aiLangRow.addView(makePillBtn(if (autoMultiLang) "🌍 AI: Otomatik Çoklu Dil ✅" else "🇹🇷 AI: Sabit Dil", autoMultiLang) {
+            prefs.edit().putBoolean("ai_auto_multilang", !autoMultiLang).apply()
+            dialogRef?.dismiss()
+            showSettingsDialog()
+        })
+        rootBox.addView(aiLangRow)
+
+        // 6. İzinler & Bulut
+        addSectionTitle("🛡️ İzin Rehberi & Bulut Aktarımı")
+        val permRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        permRow.addView(makePillBtn("🛡️ Adım Adım İzin Rehberi", false, 1.1f, Color.parseColor("#4F46E5")) {
+            dialogRef?.dismiss()
+            showStepByStepPermissionsDialog()
+        })
+        permRow.addView(makePillBtn("☁️ G.Foto İçe Aktar", false, 1f, Color.parseColor("#EA580C")) {
+            dialogRef?.dismiss()
+            showGooglePhotosImportDialog()
+        })
+        rootBox.addView(permRow)
+
+        dialogRef = AlertDialog.Builder(this)
+            .setTitle(strings.settingsTitle)
+            .setView(scroll)
             .setNegativeButton("Kapat", null)
-            .show()
+            .create()
+        dialogRef.show()
     }
 
     private fun showPersonTrainDialog() {
@@ -1145,11 +1456,9 @@ class MainActivity : AppCompatActivity() {
             cachedAllMemes = null
             VideoIndexer.clearAllCaches()
             loadAlbumsIntoSpinner()
-            val selectedAlbum = if (availableAlbums.isNotEmpty() && albumSpinner.selectedItemPosition in availableAlbums.indices) {
-                availableAlbums[albumSpinner.selectedItemPosition]
-            } else {
-                VideoIndexer.AlbumInfo("🌟 Tüm Galeri (Hepsi)", 0, isAll = true)
-            }
+            val selectedAlbum = availableAlbums.firstOrNull {
+                (selectedAlbumFilter == null && it.isAll) || it.name == selectedAlbumFilter
+            } ?: VideoIndexer.AlbumInfo("🌟 Tüm Galeri (Hepsi)", 0, isAll = true)
 
             val pendingCount = withContext(Dispatchers.IO) {
                 val indexer = VideoIndexer(this@MainActivity)
@@ -1172,8 +1481,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startIncrementalScanService() {
-        if (availableAlbums.isEmpty()) return
-        val selectedAlbum = availableAlbums[albumSpinner.selectedItemPosition]
+        val selectedAlbum = availableAlbums.firstOrNull {
+            (selectedAlbumFilter == null && it.isAll) || it.name == selectedAlbumFilter
+        } ?: VideoIndexer.AlbumInfo("🌟 Tüm Galeri (Hepsi)", 0, isAll = true)
         val intent = Intent(this, ScanForegroundService::class.java).apply {
             action = ScanForegroundService.ACTION_START_SCAN
             putExtra(ScanForegroundService.EXTRA_ALBUM_NAME, selectedAlbum.name)
@@ -1183,16 +1493,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startRepairService() {
-        val albumLabel = if (availableAlbums.isNotEmpty() && albumSpinner.selectedItemPosition in availableAlbums.indices) {
-            availableAlbums[albumSpinner.selectedItemPosition].name
-        } else {
-            "Tüm Galeri"
-        }
+        val albumLabel = selectedAlbumFilter ?: "🌟 Tüm Galeri (Hepsi)"
 
         val onlineStatus = if (OnlineAiAnalyzer.isOnline(this)) {
             "🟢 İnternet bağlı: Çoklu Ajan (Whisper AAC + Mantık Düzeltme + Qwen 3.8 Görsel/Kişi Tanıma) aktif!"
         } else {
-            "🟠 İnternet bağlı değil: Çevrimdışı 3-Kare Altyazı OCR + Vosk motoru kullanılacak."
+            "🟠 İnternet bağlı değil: Ses çözümleme için internet bağlantısı gerekir (sadece ekran yazısı OCR çalışır)."
         }
 
         AlertDialog.Builder(this)
@@ -1218,11 +1524,11 @@ class MainActivity : AppCompatActivity() {
         val intent = Intent(this, ScanForegroundService::class.java).apply {
             action = ScanForegroundService.ACTION_START_REPAIR
             putExtra(ScanForegroundService.EXTRA_FORCE_FULL_ALBUM, forceFullAlbum)
-            if (availableAlbums.isNotEmpty() && albumSpinner.selectedItemPosition in availableAlbums.indices) {
-                val selectedAlbum = availableAlbums[albumSpinner.selectedItemPosition]
-                putExtra(ScanForegroundService.EXTRA_ALBUM_NAME, selectedAlbum.name)
-                putExtra(ScanForegroundService.EXTRA_ALBUM_IS_ALL, selectedAlbum.isAll)
-            }
+            val selectedAlbum = availableAlbums.firstOrNull {
+                (selectedAlbumFilter == null && it.isAll) || it.name == selectedAlbumFilter
+            } ?: VideoIndexer.AlbumInfo("🌟 Tüm Galeri (Hepsi)", 0, isAll = true)
+            putExtra(ScanForegroundService.EXTRA_ALBUM_NAME, selectedAlbum.name)
+            putExtra(ScanForegroundService.EXTRA_ALBUM_IS_ALL, selectedAlbum.isAll)
         }
         ContextCompat.startForegroundService(this, intent)
     }
@@ -1316,8 +1622,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateTabColors() {
         val theme = AppStrings.getTheme(this)
-        val activeColor = theme.accentHex
-        val inactiveColor = theme.cardHex
+        val alpha = AppStrings.getGlassAlpha(this)
+        val activeColor = AppStrings.withAlpha(theme.accentHex, if (alpha < 0.99f) 0.88f else 1.0f)
+        val inactiveColor = AppStrings.withAlpha(theme.cardHex, alpha)
 
         tabAllBtn.background = GradientDrawable().apply {
             cornerRadius = dpToPx(10f).toFloat()
@@ -1377,17 +1684,31 @@ class MainActivity : AppCompatActivity() {
                 val corrected = input.text.toString().trim()
                 if (corrected.isNotBlank()) {
                     lifecycleScope.launch {
-                        withContext(Dispatchers.IO) {
-                            val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
-                            db.updateSpokenText(meme.filePath, corrected)
-                        }
                         val prefs = getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
                         val editedSet = prefs.getStringSet("user_edited_paths", emptySet())?.toMutableSet() ?: mutableSetOf()
                         editedSet.add(meme.filePath)
                         prefs.edit().putStringSet("user_edited_paths", editedSet).apply()
+
+                        val similarCount = withContext(Dispatchers.IO) {
+                            val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
+                            db.updateSpokenText(meme.filePath, corrected)
+                            if (!meme.isVideo) {
+                                VideoIndexer(this@MainActivity).propagateTagToSimilarPhotos(
+                                    sourcePath = meme.filePath,
+                                    newText = corrected,
+                                    albumName = meme.albumName,
+                                    editedPaths = editedSet
+                                )
+                            } else 0
+                        }
                         cachedAllMemes = null
                         VideoIndexer.invalidateCacheFor(meme.filePath)
-                        Toast.makeText(this@MainActivity, "✅ Replik güncellendi!", Toast.LENGTH_SHORT).show()
+                        val msg = if (similarCount > 0) {
+                            "✅ Güncellendi! (+$similarCount benzer fotoğrafa da eklendi)"
+                        } else {
+                            "✅ Replik güncellendi!"
+                        }
+                        Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
                         filterList(searchInput.text.toString().trim(), immediate = true)
                     }
                 }
@@ -1748,39 +2069,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadAlbumsIntoSpinner() {
         lifecycleScope.launch {
-            val prevAlbumName = if (availableAlbums.isNotEmpty() && albumSpinner.selectedItemPosition in availableAlbums.indices) {
-                availableAlbums[albumSpinner.selectedItemPosition].name
-            } else {
-                null
-            }
-
             val indexer = VideoIndexer(this@MainActivity)
             availableAlbums = indexer.getAvailableAlbums()
-
-            val names = availableAlbums.map { "${it.name} (${it.count} öğe)" }
-            val spinnerAdapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, names)
-            suppressNextSpinnerSelection = true
-            albumSpinner.adapter = spinnerAdapter
-
-            if (prevAlbumName != null) {
-                val idx = availableAlbums.indexOfFirst { it.name == prevAlbumName }
-                if (idx >= 0) albumSpinner.setSelection(idx)
-            }
-
-            albumSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                    if (suppressNextSpinnerSelection) {
-                        suppressNextSpinnerSelection = false
-                        return
-                    }
-                    if (position in availableAlbums.indices) {
-                        val chosen = availableAlbums[position]
-                        selectedAlbumFilter = if (chosen.isAll) null else chosen.name
-                        filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false, immediate = true)
-                    }
-                }
-                override fun onNothingSelected(parent: AdapterView<*>?) {}
-            }
+            updateAlbumButtonLabel()
         }
     }
 

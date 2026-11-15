@@ -20,14 +20,11 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import org.vosk.Model
-import org.vosk.Recognizer
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.util.zip.ZipInputStream
 import kotlin.math.abs
 import java.util.concurrent.ConcurrentHashMap
 
@@ -99,7 +96,7 @@ class VideoIndexer(private val context: Context) {
             return text
         }
 
-        private val weakVoskFillerWords = setOf(
+        private val weakSpokenFillerWords = setOf(
             "bilmiyorum", "bilmiyor", "biliyorum", "bilemedim", "bu", "ne", "ya", "ben", "on", "kim",
             "b", "d", "o", "e", "i", "mu", "mü", "mi", "mı", "ve", "de", "da", "ki", "bi", "bir",
             "ama", "çok", "yok", "var", "hayır", "hayir", "evet", "tamam", "geciyor", "geçiyor",
@@ -127,7 +124,7 @@ class VideoIndexer(private val context: Context) {
             if (words.isEmpty()) return true
             if (words.size == 1) {
                 val w = words[0]
-                if (w.length <= 2 || w in weakVoskFillerWords) return true
+                if (w.length <= 2 || w in weakSpokenFillerWords) return true
             }
             return false
         }
@@ -589,98 +586,79 @@ class VideoIndexer(private val context: Context) {
         }
     }
 
-    fun getOrInitVoskModel(onStatus: ((String) -> Unit)? = null): Model? {
-        val baseDir = File(context.filesDir, "vosk_tr_model_v9")
-        var finalMdl = findFileRecursively(baseDir, "final.mdl")
-
-        if (finalMdl == null) {
-            try {
-                onStatus?.invoke("📦 Türkçe ses modeli çıkartılıyor (ilk kurulum)...")
-                baseDir.deleteRecursively()
-                baseDir.mkdirs()
-
-                val assetList = context.assets.list("")?.toSet() ?: emptySet()
-                if ("vosk_tr.zip" in assetList) {
-                    context.assets.open("vosk_tr.zip").use { rawIn ->
-                        ZipInputStream(rawIn.buffered()).use { zis ->
-                            var entry = zis.nextEntry
-                            val buffer = ByteArray(16384)
-                            while (entry != null) {
-                                val outFile = File(baseDir, entry.name)
-                                if (entry.isDirectory) {
-                                    outFile.mkdirs()
-                                } else {
-                                    outFile.parentFile?.mkdirs()
-                                    FileOutputStream(outFile).use { fos ->
-                                        var len: Int
-                                        while (zis.read(buffer).also { len = it } > 0) {
-                                            fos.write(buffer, 0, len)
-                                        }
-                                    }
-                                }
-                                zis.closeEntry()
-                                entry = zis.nextEntry
-                            }
-                        }
-                    }
-                } else {
-                    copyAssetsFolder("models/vosk-model-small-tr", baseDir)
-                }
-            } catch (e: Throwable) {
-                e.printStackTrace()
-                return null
-            }
-            finalMdl = findFileRecursively(baseDir, "final.mdl")
-        }
-
-        if (finalMdl == null) return null
-
-        val modelRootDir = if (finalMdl.parentFile?.name == "am") {
-            finalMdl.parentFile?.parentFile ?: baseDir
-        } else {
-            finalMdl.parentFile ?: baseDir
-        }
-
+    /**
+     * V18.0 Görsel Benzerlik (9x8 dHash) Motoru:
+     * Aynı mekânda/açıda çekilmiş benzer fotoğrafları milisaniyeler içinde eşleştirir.
+     */
+    fun computeImageDHash(filePath: String): Long? {
         return try {
-            Model(modelRootDir.absolutePath)
-        } catch (e: Throwable) {
-            e.printStackTrace()
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(filePath, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+            var sample = 1
+            while (bounds.outWidth / sample > 64 || bounds.outHeight / sample > 64) {
+                sample *= 2
+            }
+            val opts = BitmapFactory.Options().apply {
+                inSampleSize = sample
+                inPreferredConfig = Bitmap.Config.RGB_565
+            }
+            val bmp = BitmapFactory.decodeFile(filePath, opts) ?: return null
+            val small = Bitmap.createScaledBitmap(bmp, 9, 8, true)
+            if (small != bmp) bmp.recycle()
+            var hash = 0L
+            var bit = 0
+            for (y in 0 until 8) {
+                for (x in 0 until 8) {
+                    val p1 = small.getPixel(x, y)
+                    val p2 = small.getPixel(x + 1, y)
+                    val g1 = ((p1 shr 16 and 0xFF) * 30 + (p1 shr 8 and 0xFF) * 59 + (p1 and 0xFF) * 11)
+                    val g2 = ((p2 shr 16 and 0xFF) * 30 + (p2 shr 8 and 0xFF) * 59 + (p2 and 0xFF) * 11)
+                    if (g1 > g2) {
+                        hash = hash or (1L shl bit)
+                    }
+                    bit++
+                }
+            }
+            small.recycle()
+            hash
+        } catch (_: Exception) {
             null
         }
     }
 
-    private fun findFileRecursively(dir: File, targetName: String): File? {
-        if (!dir.exists()) return null
-        val files = dir.listFiles() ?: return null
-        for (f in files) {
-            if (f.isFile && f.name == targetName && f.length() > 100_000L) {
-                return f
-            } else if (f.isDirectory) {
-                val found = findFileRecursively(f, targetName)
-                if (found != null) return found
-            }
+    suspend fun propagateTagToSimilarPhotos(
+        sourcePath: String,
+        newText: String,
+        albumName: String?,
+        editedPaths: Set<String>
+    ): Int = withContext(Dispatchers.IO) {
+        val targetHash = computeImageDHash(sourcePath) ?: return@withContext 0
+        val all = db.getAllMemes()
+        val candidates = all.filter {
+            !it.isVideo &&
+            it.filePath != sourcePath &&
+            it.filePath !in editedPaths &&
+            (albumName.isNullOrBlank() || it.albumName == albumName)
         }
-        return null
-    }
-
-    private fun copyAssetsFolder(assetPath: String, destDir: File) {
-        val assets = context.assets.list(assetPath) ?: return
-        if (assets.isEmpty()) return
-        if (!destDir.exists()) destDir.mkdirs()
-        for (item in assets) {
-            val subAssetPath = "$assetPath/$item"
-            val subDest = File(destDir, item)
-            val subAssets = context.assets.list(subAssetPath)
-            if (subAssets != null && subAssets.isNotEmpty()) {
-                copyAssetsFolder(subAssetPath, subDest)
-            } else {
-                context.assets.open(subAssetPath).use { inStream ->
-                    FileOutputStream(subDest).use { outStream ->
-                        inStream.copyTo(outStream)
-                    }
+        var updatedCount = 0
+        for (cand in candidates) {
+            val h = computeImageDHash(cand.filePath) ?: continue
+            val dist = java.lang.Long.bitCount(targetHash xor h)
+            if (dist <= 10) {
+                val existingVis = cleanVisualLabelsString(cand.visualLabels)
+                val mergedSpoken = if (cand.spokenText.isBlank()) newText else cand.spokenText
+                val mergedVis = when {
+                    existingVis.contains(newText, ignoreCase = true) -> existingVis
+                    existingVis.isBlank() -> "🏷️ $newText"
+                    else -> "$existingVis • $newText"
                 }
+                db.updateFields(cand.filePath, mergedSpoken, cand.screenText, mergedVis)
+                invalidateCacheFor(cand.filePath)
+                updatedCount++
             }
         }
+        updatedCount
     }
 
     /**
@@ -787,21 +765,17 @@ class VideoIndexer(private val context: Context) {
         }
 
         val isGooglePhotosMode = AppStrings.getGalleryMode(context) == "gphotos"
-        if (isGooglePhotosMode) {
+        val hasImportedCloud = albums.keys.any { it.startsWith("☁️ ") }
+        val showAiBuiltins = isGooglePhotosMode || hasImportedCloud || albums.size <= 1
+        if (showAiBuiltins) {
             if (funnyCount > 0) result.add(AlbumInfo(AI_ALBUM_FUNNY, funnyCount, isAll = false))
             if (speechCount > 0) result.add(AlbumInfo(AI_ALBUM_SPEECH, speechCount, isAll = false))
             if (subCount > 0) result.add(AlbumInfo(AI_ALBUM_SUBTITLE, subCount, isAll = false))
             if (visCount > 0) result.add(AlbumInfo(AI_ALBUM_VISUAL, visCount, isAll = false))
-            result.addAll(albums.map { AlbumInfo(it.key, it.value) }.sortedByDescending {
-                if (it.name.startsWith("☁️ ")) it.count + 100000 else it.count
-            })
-        } else {
-            if (funnyCount > 0) result.add(AlbumInfo(AI_ALBUM_FUNNY, funnyCount, isAll = false))
-            if (speechCount > 0) result.add(AlbumInfo(AI_ALBUM_SPEECH, speechCount, isAll = false))
-            if (subCount > 0) result.add(AlbumInfo(AI_ALBUM_SUBTITLE, subCount, isAll = false))
-            if (visCount > 0) result.add(AlbumInfo(AI_ALBUM_VISUAL, visCount, isAll = false))
-            result.addAll(albums.map { AlbumInfo(it.key, it.value) }.sortedByDescending { it.count })
         }
+        result.addAll(albums.map { AlbumInfo(it.key, it.value) }.sortedByDescending {
+            if (it.name.startsWith("☁️ ")) it.count + 100000 else it.count
+        })
         return@withContext result
     }
 
@@ -994,7 +968,7 @@ class VideoIndexer(private val context: Context) {
         Triple(durationMs, screenTexts.joinToString(" | "), offlineScene)
     }
 
-    suspend fun extractVideoData(file: File, voskModel: Model?, albumName: String = ""): MemeVideo = coroutineScope {
+    suspend fun extractVideoData(file: File, albumName: String = ""): MemeVideo = coroutineScope {
         val localVisualDeferred = async(Dispatchers.IO) {
             extractLocalVideoOcrAndScene(file)
         }
@@ -1029,17 +1003,11 @@ class VideoIndexer(private val context: Context) {
             )
         }
 
-        val offlineSpoken = if (voskModel != null) {
-            withContext(Dispatchers.Default) { transcribeVideoAudio(file, voskModel) }
-        } else {
-            ""
-        }
-
         MemeVideo(
             filePath = file.absolutePath,
             fileName = file.nameWithoutExtension,
             durationMs = localDurMs,
-            spokenText = offlineSpoken,
+            spokenText = "",
             screenText = localScreenText,
             visualLabels = localSceneLabel,
             isVideo = true,
@@ -1213,136 +1181,6 @@ class VideoIndexer(private val context: Context) {
             try { codec?.release() } catch (_: Exception) {}
             try { extractor.release() } catch (_: Exception) {}
         }
-    }
-
-    private fun transcribeVideoAudio(videoFile: File, voskModel: Model): String {
-        val extractor = MediaExtractor()
-        val transcriptParts = mutableListOf<String>()
-        var codec: MediaCodec? = null
-        var recognizer: Recognizer? = null
-
-        try {
-            extractor.setDataSource(videoFile.absolutePath)
-            var audioTrackIndex = -1
-            var format: MediaFormat? = null
-
-            for (i in 0 until extractor.trackCount) {
-                val trackFormat = extractor.getTrackFormat(i)
-                val mime = trackFormat.getString(MediaFormat.KEY_MIME) ?: ""
-                if (mime.startsWith("audio/")) {
-                    audioTrackIndex = i
-                    format = trackFormat
-                    break
-                }
-            }
-
-            if (audioTrackIndex == -1 || format == null) return ""
-
-            extractor.selectTrack(audioTrackIndex)
-            val mime = format.getString(MediaFormat.KEY_MIME) ?: return ""
-            var pcmSampleRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) format.getInteger(MediaFormat.KEY_SAMPLE_RATE) else 44100
-            var pcmChannels = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 1
-
-            try {
-                format.setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
-            } catch (_: Exception) {}
-
-            codec = MediaCodec.createDecoderByType(mime)
-            codec.configure(format, null, null, 0)
-            codec.start()
-
-            val bufferInfo = MediaCodec.BufferInfo()
-            var isEOS = false
-            var totalProcessedTimeUs = 0L
-            val maxAudioDurationUs = 12_000_000L
-
-            val mono16kOut = ByteArrayOutputStream(32000 * 15)
-
-            while (!isEOS && totalProcessedTimeUs < maxAudioDurationUs) {
-                val inIndex = codec.dequeueInputBuffer(8_000)
-                if (inIndex >= 0) {
-                    val inputBuffer = codec.getInputBuffer(inIndex)
-                    if (inputBuffer != null) {
-                        val sampleSize = extractor.readSampleData(inputBuffer, 0)
-                        if (sampleSize < 0) {
-                            codec.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            isEOS = true
-                        } else {
-                            totalProcessedTimeUs = extractor.sampleTime
-                            codec.queueInputBuffer(inIndex, 0, sampleSize, totalProcessedTimeUs, 0)
-                            extractor.advance()
-                        }
-                    }
-                }
-
-                var outIndex = codec.dequeueOutputBuffer(bufferInfo, 8_000)
-                while (outIndex >= 0 || outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        val outFormat = codec.outputFormat
-                        if (outFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
-                            pcmSampleRate = outFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                        }
-                        if (outFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
-                            pcmChannels = outFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                        }
-                    } else if (outIndex >= 0) {
-                        val outputBuffer = codec.getOutputBuffer(outIndex)
-                        if (outputBuffer != null && bufferInfo.size > 0) {
-                            outputBuffer.position(bufferInfo.offset)
-                            outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
-                            val pcmBytes = ByteArray(bufferInfo.size)
-                            outputBuffer.get(pcmBytes)
-
-                            val resampled = resampleTo16kMonoBytes(pcmBytes, pcmSampleRate, pcmChannels)
-                            if (resampled.isNotEmpty()) {
-                                mono16kOut.write(resampled)
-                            }
-                        }
-                        codec.releaseOutputBuffer(outIndex, false)
-                    }
-                    outIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
-                }
-            }
-
-            val all16kBytes = normalizeAudioGain(mono16kOut.toByteArray())
-            if (all16kBytes.isNotEmpty()) {
-                recognizer = Recognizer(voskModel, 16000f)
-                val chunkSize = 8000
-                var offset = 0
-                while (offset < all16kBytes.size) {
-                    val len = minOf(chunkSize, all16kBytes.size - offset)
-                    var chunkPeak = 0
-                    var i = offset
-                    while (i + 1 < offset + len) {
-                        val sample = (all16kBytes[i].toInt() and 0xFF) or (all16kBytes[i + 1].toInt() shl 8)
-                        val amp = abs(sample)
-                        if (amp > chunkPeak) chunkPeak = amp
-                        i += 6
-                    }
-                    if (chunkPeak > 1400) {
-                        val chunk = all16kBytes.copyOfRange(offset, offset + len)
-                        if (recognizer.acceptWaveForm(chunk, len)) {
-                            val resJson = JSONObject(recognizer.result)
-                            val text = resJson.optString("text", "").trim()
-                            if (text.isNotBlank()) transcriptParts.add(text)
-                        }
-                    }
-                    offset += len
-                }
-                val finalJson = JSONObject(recognizer.finalResult)
-                val finalText = finalJson.optString("text", "").trim()
-                if (finalText.isNotBlank()) transcriptParts.add(finalText)
-            }
-
-        } catch (e: Exception) {
-            e.printStackTrace()
-        } finally {
-            try { codec?.stop() } catch (_: Exception) {}
-            try { codec?.release() } catch (_: Exception) {}
-            try { recognizer?.close() } catch (_: Exception) {}
-            try { extractor.release() } catch (_: Exception) {}
-        }
-        return autoCorrectTurkishReplik(transcriptParts.joinToString(" ").trim())
     }
 
     private fun resampleTo16kMonoBytes(rawPcm: ByteArray, inSampleRate: Int, channels: Int): ByteArray {

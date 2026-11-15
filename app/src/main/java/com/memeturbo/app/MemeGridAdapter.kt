@@ -58,7 +58,7 @@ class MemeGridAdapter(
             return File(dir, "t_$hash.jpg")
         }
 
-        private fun scaleDownBitmap(raw: Bitmap, maxDim: Int = 180): Bitmap {
+        private fun scaleDownBitmap(raw: Bitmap, maxDim: Int = 200): Bitmap {
             val w = raw.width
             val h = raw.height
             if (w <= 0 || h <= 0) return raw
@@ -81,7 +81,7 @@ class MemeGridAdapter(
                 val frame = retriever.getFrameAtTime(-1L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                     ?: retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 if (frame != null) {
-                    return scaleDownBitmap(frame, 180)
+                    return scaleDownBitmap(frame, 200)
                 }
             } catch (_: Exception) {
             } finally {
@@ -90,7 +90,7 @@ class MemeGridAdapter(
             return try {
                 @Suppress("DEPRECATION")
                 val fallback = ThumbnailUtils.createVideoThumbnail(targetPath, MediaStore.Images.Thumbnails.MINI_KIND)
-                if (fallback != null) scaleDownBitmap(fallback, 180) else null
+                if (fallback != null) scaleDownBitmap(fallback, 200) else null
             } catch (_: Exception) {
                 null
             }
@@ -102,7 +102,7 @@ class MemeGridAdapter(
                 BitmapFactory.decodeFile(targetPath, bounds)
                 if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
                 var sample = 1
-                while (bounds.outWidth / sample > 220 || bounds.outHeight / sample > 220) {
+                while (bounds.outWidth / sample > 240 || bounds.outHeight / sample > 240) {
                     sample *= 2
                 }
                 val opts = BitmapFactory.Options().apply {
@@ -110,7 +110,7 @@ class MemeGridAdapter(
                     inPreferredConfig = Bitmap.Config.RGB_565
                 }
                 val decoded = BitmapFactory.decodeFile(targetPath, opts) ?: return null
-                scaleDownBitmap(decoded, 180)
+                scaleDownBitmap(decoded, 200)
             } catch (_: Exception) {
                 null
             }
@@ -170,42 +170,45 @@ class MemeGridAdapter(
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): MemeViewHolder {
         val context = parent.context
         val theme = AppStrings.getTheme(context)
+        val glassAlpha = AppStrings.getGlassAlpha(context)
         val cols = AppStrings.getGridColumns(context)
         val compact = AppStrings.isCompactGalleryCard(context) || cols == 3
         val strings = AppStrings.tr(context)
 
+        // V18: Hantal kenar boşlukları kaldırıldı; görsel çerçeveye sıfıra yakın oturur
         val card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            val pad = if (compact) dpToPx(parent, 8f) else dpToPx(parent, 10f)
-            setPadding(pad, pad, pad, pad)
+            val pad = if (compact) dpToPx(parent, 3f) else dpToPx(parent, 4f)
+            setPadding(pad, pad, pad, dpToPx(parent, 5f))
             background = GradientDrawable().apply {
-                cornerRadius = dpToPx(parent, 18f).toFloat()
-                setColor(theme.cardHex)
-                setStroke(dpToPx(parent, 1.2f), theme.cardStrokeHex)
+                cornerRadius = dpToPx(parent, 14f).toFloat()
+                setColor(AppStrings.withAlpha(theme.cardHex, glassAlpha))
+                setStroke(dpToPx(parent, 1f), AppStrings.withAlpha(theme.cardStrokeHex, (glassAlpha + 0.12f).coerceAtMost(1f)))
             }
             layoutParams = RecyclerView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                val m = if (cols == 3) dpToPx(parent, 4f) else dpToPx(parent, 6f)
+                val m = if (cols == 3) dpToPx(parent, 3f) else dpToPx(parent, 4f)
                 setMargins(m, m, m, m)
             }
         }
 
+        // Video/fotoğraf önizlemesi her zaman %100 net/opak kalır!
         val thumbContainer = FrameLayout(context).apply {
             val hDp = when {
-                cols == 1 -> 185f
-                cols == 3 -> 96f
-                compact -> 132f
-                else -> 118f
+                cols == 1 -> 200f
+                cols == 3 -> 108f
+                compact -> 142f
+                else -> 136f
             }
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 dpToPx(parent, hDp)
             )
             background = GradientDrawable().apply {
-                cornerRadius = dpToPx(parent, 14f).toFloat()
-                setColor(theme.bgHex)
+                cornerRadius = dpToPx(parent, 11f).toFloat()
+                setColor(Color.BLACK)
             }
             clipToOutline = true
         }
@@ -222,17 +225,17 @@ class MemeGridAdapter(
             textSize = 9.5f
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(dpToPx(parent, 6f), dpToPx(parent, 2f), dpToPx(parent, 6f), dpToPx(parent, 2f))
+            setPadding(dpToPx(parent, 5f), dpToPx(parent, 2f), dpToPx(parent, 5f), dpToPx(parent, 2f))
             background = GradientDrawable().apply {
-                cornerRadius = dpToPx(parent, 8f).toFloat()
-                setColor(Color.parseColor("#AA0F172A"))
+                cornerRadius = dpToPx(parent, 7f).toFloat()
+                setColor(Color.parseColor("#B30F172A"))
             }
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP or Gravity.END
             ).apply {
-                setMargins(0, dpToPx(parent, 6f), dpToPx(parent, 6f), 0)
+                setMargins(0, dpToPx(parent, 5f), dpToPx(parent, 5f), 0)
             }
         }
 
@@ -241,22 +244,24 @@ class MemeGridAdapter(
 
         val transcriptView = TextView(context).apply {
             setTextColor(theme.textHighlightHex)
-            textSize = if (compact) 11f else 12f
+            textSize = if (compact) 10.5f else 11.5f
             maxLines = if (compact) 1 else 2
             ellipsize = TextUtils.TruncateAt.END
-            setPadding(dpToPx(parent, 2f), dpToPx(parent, 6f), dpToPx(parent, 2f), dpToPx(parent, 6f))
+            setPadding(dpToPx(parent, 3f), dpToPx(parent, 4f), dpToPx(parent, 3f), dpToPx(parent, 4f))
         }
 
         val actionRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            setPadding(dpToPx(parent, 2f), 0, dpToPx(parent, 2f), 0)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             )
         }
 
-        val btnHeight = if (compact) dpToPx(parent, 30f) else dpToPx(parent, 34f)
+        val btnHeight = if (compact) dpToPx(parent, 28f) else dpToPx(parent, 31f)
+        val btnAlpha = if (glassAlpha < 0.99f) (glassAlpha + 0.1f).coerceAtMost(0.92f) else 1.0f
 
         val playBtn = Button(context).apply {
             text = if (compact) "▶" else strings.playBtn
@@ -265,8 +270,8 @@ class MemeGridAdapter(
             isAllCaps = false
             setPadding(0, 0, 0, 0)
             background = GradientDrawable().apply {
-                cornerRadius = dpToPx(parent, 12f).toFloat()
-                setColor(theme.secondaryBtnHex)
+                cornerRadius = dpToPx(parent, 10f).toFloat()
+                setColor(AppStrings.withAlpha(theme.secondaryBtnHex, btnAlpha))
             }
             layoutParams = LinearLayout.LayoutParams(0, btnHeight, if (compact) 0.7f else 1f).apply {
                 rightMargin = dpToPx(parent, 4f)
@@ -280,16 +285,16 @@ class MemeGridAdapter(
             isAllCaps = false
             setPadding(0, 0, 0, 0)
             background = GradientDrawable().apply {
-                cornerRadius = dpToPx(parent, 12f).toFloat()
-                setColor(theme.accentHex)
+                cornerRadius = dpToPx(parent, 10f).toFloat()
+                setColor(AppStrings.withAlpha(theme.accentHex, btnAlpha))
             }
             layoutParams = LinearLayout.LayoutParams(0, btnHeight, 1.25f)
         }
 
         val editTagBtn = TextView(context).apply {
             text = "✏️"
-            textSize = if (compact) 13f else 14.5f
-            setPadding(dpToPx(parent, 5f), dpToPx(parent, 3f), dpToPx(parent, 3f), dpToPx(parent, 3f))
+            textSize = if (compact) 13f else 14f
+            setPadding(dpToPx(parent, 5f), dpToPx(parent, 2f), dpToPx(parent, 2f), dpToPx(parent, 2f))
             visibility = if (onEditTagsClick != null) View.VISIBLE else View.GONE
         }
 

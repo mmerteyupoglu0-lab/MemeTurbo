@@ -24,7 +24,7 @@ object AppStrings {
     val themes = listOf(
         ThemePalette(
             id = 0,
-            nameTr = "🌌 Gece Mavisi (Cyber Dark)",
+            nameTr = "🌌 Gece Mavisi",
             bgHex = Color.parseColor("#0B1120"),
             headerHex = Color.parseColor("#151F32"),
             cardHex = Color.parseColor("#1E293B"),
@@ -36,7 +36,7 @@ object AppStrings {
         ),
         ThemePalette(
             id = 1,
-            nameTr = "🖤 Tam Siyah (AMOLED Galeri)",
+            nameTr = "🖤 AMOLED Siyah",
             bgHex = Color.parseColor("#050505"),
             headerHex = Color.parseColor("#101014"),
             cardHex = Color.parseColor("#16161D"),
@@ -48,7 +48,7 @@ object AppStrings {
         ),
         ThemePalette(
             id = 2,
-            nameTr = "🔮 Neon Mor (Amethyst Glow)",
+            nameTr = "🔮 Neon Mor",
             bgHex = Color.parseColor("#0F0720"),
             headerHex = Color.parseColor("#1A0E36"),
             cardHex = Color.parseColor("#241447"),
@@ -60,7 +60,7 @@ object AppStrings {
         ),
         ThemePalette(
             id = 3,
-            nameTr = "🌲 Zümrüt Modern (Emerald)",
+            nameTr = "🌲 Zümrüt",
             bgHex = Color.parseColor("#041311"),
             headerHex = Color.parseColor("#09221E"),
             cardHex = Color.parseColor("#0F2E29"),
@@ -71,6 +71,22 @@ object AppStrings {
             textHighlightHex = Color.parseColor("#6EE7B7")
         )
     )
+
+    fun withAlpha(color: Int, alphaFraction: Float): Int {
+        val a = (alphaFraction.coerceIn(0.15f, 1.0f) * 255f).toInt()
+        return Color.argb(a, Color.red(color), Color.green(color), Color.blue(color))
+    }
+
+    fun getWallpaperPath(context: Context): String {
+        val prefs = context.getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+        return prefs.getString("ui_wallpaper_path", "") ?: ""
+    }
+
+    fun getGlassAlpha(context: Context): Float {
+        if (getWallpaperPath(context).isBlank()) return 1.0f
+        val prefs = context.getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+        return prefs.getFloat("ui_glass_alpha", 0.72f).coerceIn(0.35f, 0.95f)
+    }
 
     fun getTheme(context: Context): ThemePalette {
         val prefs = context.getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
@@ -123,15 +139,13 @@ object AppStrings {
         val allGalleryLabel: String,
         val settingsTitle: String,
         val onboardingTitle: String,
-        val onboardingMsg: String,
-        val modeDeviceGallery: String,
-        val modeGooglePhotos: String
+        val onboardingMsg: String
     )
 
     fun tr(context: Context): Strings {
         return when (getLang(context)) {
             "en" -> Strings(
-                subtitleBanner = "🚀 V17 Global Gallery: AI Smart Albums • Google Photos Mode • Zero Lag",
+                subtitleBanner = "🚀 V18 Pro: 4x Fast AI • Glass Wallpaper • Smart Similar Photo Match",
                 btnAiAlbum = "✨ AI Album",
                 btnPerson = "👤 Face ID",
                 btnGPhotos = "☁️ G.Photos",
@@ -146,13 +160,11 @@ object AppStrings {
                 shareBtn = "Share 🚀",
                 allGalleryLabel = "🌟 All Gallery (Everything)",
                 settingsTitle = "⚙️ Settings & Customization",
-                onboardingTitle = "👋 Welcome! Which Gallery Do You Use Most?",
-                onboardingMsg = "Choose how MemeTurbo organizes your videos and photos (you can change this anytime in Settings):",
-                modeDeviceGallery = "📱 Phone's Own Gallery (Folder Mode)\nShows local folders (WhatsApp, Download, Movies) separately.",
-                modeGooglePhotos = "🌈 Google Photos (Smart AI & Cloud Mode)\nGroups messy downloads into Funny Memes, Quotes & Scenes + Cloud Picker."
+                onboardingTitle = "👋 Which Gallery Do You Use Most?",
+                onboardingMsg = "Choose how MemeTurbo organizes your videos and photos (changeable anytime in Settings):"
             )
             "fr" -> Strings(
-                subtitleBanner = "🚀 V17 Galerie Globale : Albums IA • Mode Google Photos • Sans Lag",
+                subtitleBanner = "🚀 V18 Pro : IA 4x Plus Rapide • Fond d'écran Verre • Photos Similaires",
                 btnAiAlbum = "✨ Album IA",
                 btnPerson = "👤 Visage",
                 btnGPhotos = "☁️ G.Photos",
@@ -166,14 +178,12 @@ object AppStrings {
                 playBtn = "▶ Lire",
                 shareBtn = "Partager 🚀",
                 allGalleryLabel = "🌟 Toute la Galerie",
-                settingsTitle = "⚙️ Paramètres et Personnalisation",
+                settingsTitle = "⚙️ Paramètres & Apparence",
                 onboardingTitle = "👋 Quelle galerie utilisez-vous le plus ?",
-                onboardingMsg = "Choisissez comment organiser vos vidéos et photos :",
-                modeDeviceGallery = "📱 Galerie du Téléphone (Par Dossier)",
-                modeGooglePhotos = "🌈 Google Photos (Albums IA & Cloud)"
+                onboardingMsg = "Choisissez comment organiser vos vidéos et photos :"
             )
             "it" -> Strings(
-                subtitleBanner = "🚀 V17 Galleria Globale: Album IA • Modalità Google Foto • Zero Lag",
+                subtitleBanner = "🚀 V18 Pro: IA 4x Veloce • Sfondo Vetro • Foto Simili",
                 btnAiAlbum = "✨ Album IA",
                 btnPerson = "👤 Volto",
                 btnGPhotos = "☁️ G.Foto",
@@ -189,12 +199,10 @@ object AppStrings {
                 allGalleryLabel = "🌟 Tutta la Galleria",
                 settingsTitle = "⚙️ Impostazioni e Stile",
                 onboardingTitle = "👋 Quale galleria usi di più?",
-                onboardingMsg = "Scegli come organizzare video e foto:",
-                modeDeviceGallery = "📱 Galleria del Telefono (Cartelle)",
-                modeGooglePhotos = "🌈 Google Foto (Album IA & Cloud)"
+                onboardingMsg = "Scegli come organizzare video e foto:"
             )
             "es" -> Strings(
-                subtitleBanner = "🚀 V17 Galería Global: Álbumes IA • Modo Google Fotos • Cero Lag",
+                subtitleBanner = "🚀 V18 Pro: IA 4x Rápida • Fondo Cristal • Fotos Similares",
                 btnAiAlbum = "✨ Álbum IA",
                 btnPerson = "👤 Rostro",
                 btnGPhotos = "☁️ G.Fotos",
@@ -209,13 +217,11 @@ object AppStrings {
                 shareBtn = "Enviar 🚀",
                 allGalleryLabel = "🌟 Toda la Galería",
                 settingsTitle = "⚙️ Ajustes y Personalización",
-                onboardingTitle = "👋 ¿Qué aplicación de galería usas más?",
-                onboardingMsg = "Elige cómo organizar tus videos y fotos:",
-                modeDeviceGallery = "📱 Galería del Teléfono (Modo Carpetas)",
-                modeGooglePhotos = "🌈 Google Fotos (Álbumes IA y Nube)"
+                onboardingTitle = "👋 ¿Qué galería usas más?",
+                onboardingMsg = "Elige cómo organizar tus videos y fotos:"
             )
             "ru" -> Strings(
-                subtitleBanner = "🚀 V17 Глобальная Галерея: ИИ-Альбомы • Google Фото • Без зависаний",
+                subtitleBanner = "🚀 V18 Pro: ИИ в 4x быстрее • Стекло-фон • Похожие фото",
                 btnAiAlbum = "✨ ИИ Альбом",
                 btnPerson = "👤 Лицо",
                 btnGPhotos = "☁️ G.Фото",
@@ -231,12 +237,10 @@ object AppStrings {
                 allGalleryLabel = "🌟 Вся Галерея",
                 settingsTitle = "⚙️ Настройки и Интерфейс",
                 onboardingTitle = "👋 Какую галерею вы используете чаще?",
-                onboardingMsg = "Выберите режим сортировки видео и фото:",
-                modeDeviceGallery = "📱 Галерея телефона (Папки)",
-                modeGooglePhotos = "🌈 Google Фото (Умные ИИ-альбомы и Облако)"
+                onboardingMsg = "Выберите режим сортировки видео и фото:"
             )
             "de" -> Strings(
-                subtitleBanner = "🚀 V17 Globale Galerie: KI-Alben • Google Fotos Modus • Kein Ruckeln",
+                subtitleBanner = "🚀 V18 Pro: 4x Schnelle KI • Glas-Hintergrund • Ähnliche Fotos",
                 btnAiAlbum = "✨ KI-Album",
                 btnPerson = "👤 Gesicht",
                 btnGPhotos = "☁️ G.Fotos",
@@ -252,12 +256,10 @@ object AppStrings {
                 allGalleryLabel = "🌟 Gesamte Galerie",
                 settingsTitle = "⚙️ Einstellungen & Design",
                 onboardingTitle = "👋 Welche Galerie nutzt du am meisten?",
-                onboardingMsg = "Wähle aus, wie Videos und Fotos sortiert werden:",
-                modeDeviceGallery = "📱 Telefon-Galerie (Ordner-Modus)",
-                modeGooglePhotos = "🌈 Google Fotos (KI-Alben & Cloud)"
+                onboardingMsg = "Wähle aus, wie Videos und Fotos sortiert werden:"
             )
             "ar" -> Strings(
-                subtitleBanner = "🚀 V17 معرض ذكي: ألبومات الذكاء الاصطناعي • صور Google • سرعة فائقة",
+                subtitleBanner = "🚀 V18 Pro: ذكاء أسرع 4x • خلفية زجاجية • مطابقة الصور",
                 btnAiAlbum = "✨ ألبوم ذكي",
                 btnPerson = "👤 الوجه",
                 btnGPhotos = "☁️ صور Google",
@@ -272,13 +274,11 @@ object AppStrings {
                 shareBtn = "مشاركة 🚀",
                 allGalleryLabel = "🌟 كل المعرض",
                 settingsTitle = "⚙️ الإعدادات والتخصيص",
-                onboardingTitle = "👋 أي تطبيق معرض تستخدمه أكثر؟",
-                onboardingMsg = "اختر طريقة تنظيم الفيديوهات والصور:",
-                modeDeviceGallery = "📱 معرض الهاتف (حسب المجلدات)",
-                modeGooglePhotos = "🌈 صور Google (ألبومات الذكاء الاصطناعي والسحابة)"
+                onboardingTitle = "👋 أي معرض تستخدمه أكثر؟",
+                onboardingMsg = "اختر طريقة تنظيم الفيديوهات والصور:"
             )
             else -> Strings(
-                subtitleBanner = "🚀 V17 Modern Galeri: ✨ AI Albüm Oluşturucu • 🌈 Google Fotoğraflar Modu • 8 Dil & 4 Tema",
+                subtitleBanner = "🚀 V18 Pro: 4x Hızlı AI • Özel Duvar Kağıdı & Saydam Cam • Benzer Foto Eşleme",
                 btnAiAlbum = "✨ AI Albüm",
                 btnPerson = "👤 Kişi",
                 btnGPhotos = "☁️ G.Foto",
@@ -294,14 +294,11 @@ object AppStrings {
                 allGalleryLabel = "🌟 Tüm Galeri (Hepsi)",
                 settingsTitle = "⚙️ Ayarlar & Görünüm Özelleştirme",
                 onboardingTitle = "👋 Hangi Galeri Uygulamasını Daha Çok Kullanıyorsunuz?",
-                onboardingMsg = "MemeTurbo'nun videolarını ve fotoğraflarını nasıl gruplayacağını seç (daha sonra ⚙️ Ayarlar'dan istediğin an değiştirebilirsin):",
-                modeDeviceGallery = "📱 Telefonun Kendi Galerisi (Klasör Modu)\nWhatsApp, Download, Snaptube, kart gibi klasörleri ayrı ayrı listeler.",
-                modeGooglePhotos = "🌈 Google Fotoğraflar (Akıllı AI & Bulut Modu)\nKarışık galeriyi otomatik '😂 Komik & Meme', '🗣️ Replikli', '🎮 Oyun' diye ayırır + Buluttan çeker."
+                onboardingMsg = "MemeTurbo'nun videolarını ve fotoğraflarını nasıl gruplayacağını seç (daha sonra ⚙️ Ayarlar'dan istediğin an değiştirebilirsin):"
             )
         }
     }
 
-    // Custom AI Albums persistence (stored as JSON in SharedPreferences)
     fun getSavedCustomAiAlbums(context: Context): Map<String, Set<String>> {
         val prefs = context.getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
         val raw = prefs.getString("custom_ai_albums_v17", null) ?: return emptyMap()
@@ -366,10 +363,6 @@ object AppStrings {
         "movies", "kart", "rope", "youcut", "inshot", "capcut", "telegram", "twitter", "reddit"
     )
 
-    /**
-     * Kullanıcının istediği amaca (örn: "komik ve küfürlü videolar", "oyun kesitleri", "ingilizce memeler")
-     * göre taranmış medyaları yerel kurallarla + anahtar kelimelerle filtreler.
-     */
     fun filterMemesForGoalHeuristic(allMemes: List<MemeVideo>, goalPrompt: String): List<MemeVideo> {
         val normGoal = VideoIndexer.normalizeTr(goalPrompt.trim())
 
