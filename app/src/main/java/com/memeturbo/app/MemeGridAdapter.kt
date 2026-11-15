@@ -5,8 +5,11 @@ import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.media.ThumbnailUtils
+import android.os.Build
+import android.os.CancellationSignal
 import android.provider.MediaStore
 import android.util.LruCache
+import android.util.Size
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -20,6 +23,7 @@ import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import java.io.File
 
 class MemeGridAdapter(
     private val onPreviewClick: (MemeVideo) -> Unit,
@@ -36,9 +40,9 @@ class MemeGridAdapter(
     }
 
     companion object {
-        private val thumbSemaphore = Semaphore(2)
+        private val thumbSemaphore = Semaphore(3)
         private val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt()
-        private val cacheSize = maxMemory / 8
+        private val cacheSize = maxMemory / 10
         val memoryCache = object : LruCache<String, Bitmap>(cacheSize) {
             override fun sizeOf(key: String, bitmap: Bitmap): Int {
                 return bitmap.byteCount / 1024
@@ -50,11 +54,6 @@ class MemeGridAdapter(
         return items[position].filePath.hashCode().toLong()
     }
 
-    /**
-     * V12.0 Sıfır Donma (Zero-ANR) Liste Güncellemesi:
-     * Tam liste yenileme (notifyDataSetChanged) yerine sadece değişen kartları arka planda
-     * DiffUtil ile hesaplayıp günceller. Böylece 148 fotoğrafın küçük resmi aynı anda baştan yüklenmez!
-     */
     fun submitList(newItems: List<MemeVideo>, onCommitted: (() -> Unit)? = null) {
         diffJob?.cancel()
         val oldSnapshot = ArrayList(items)
@@ -190,12 +189,21 @@ class MemeGridAdapter(
         return MemeViewHolder(card, thumbView, transcriptView, playBtn, sendBtn, editTagBtn)
     }
 
+    override fun onViewRecycled(holder: MemeViewHolder) {
+        super.onViewRecycled(holder)
+        holder.cancelSignal?.cancel()
+        holder.thumbJob?.cancel()
+        holder.boundPath = null
+    }
+
     override fun onBindViewHolder(holder: MemeViewHolder, position: Int) {
         val meme = items[position]
 
         if (holder.boundPath != meme.filePath) {
             holder.boundPath = meme.filePath
+            holder.cancelSignal?.cancel()
             holder.thumbJob?.cancel()
+
             val cached = memoryCache.get(meme.filePath)
             if (cached != null) {
                 holder.thumbView.setImageBitmap(cached)
@@ -203,18 +211,25 @@ class MemeGridAdapter(
                 holder.thumbView.setImageBitmap(null)
                 val targetPath = meme.filePath
                 val isVid = meme.isVideo
+                val sig = CancellationSignal()
+                holder.cancelSignal = sig
                 holder.thumbJob = adapterScope.launch {
                     val bitmap = withContext(Dispatchers.IO) {
                         thumbSemaphore.withPermit {
+                            if (sig.isCanceled) return@withPermit null
                             try {
                                 if (isVid) {
-                                    @Suppress("DEPRECATION")
-                                    ThumbnailUtils.createVideoThumbnail(targetPath, MediaStore.Images.Thumbnails.MINI_KIND)
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                        ThumbnailUtils.createVideoThumbnail(File(targetPath), Size(240, 240), sig)
+                                    } else {
+                                        @Suppress("DEPRECATION")
+                                        ThumbnailUtils.createVideoThumbnail(targetPath, MediaStore.Images.Thumbnails.MINI_KIND)
+                                    }
                                 } else {
                                     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                                     BitmapFactory.decodeFile(targetPath, bounds)
                                     var sample = 1
-                                    while (bounds.outWidth / sample > 260 || bounds.outHeight / sample > 260) {
+                                    while (bounds.outWidth / sample > 240 || bounds.outHeight / sample > 240) {
                                         sample *= 2
                                     }
                                     val opts = BitmapFactory.Options().apply {
@@ -255,6 +270,7 @@ class MemeGridAdapter(
         val sendBtn: Button,
         val editTagBtn: TextView,
         var thumbJob: Job? = null,
+        var cancelSignal: CancellationSignal? = null,
         var boundPath: String? = null
     ) : RecyclerView.ViewHolder(view)
 }

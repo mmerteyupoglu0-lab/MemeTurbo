@@ -25,7 +25,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * V14.0 Çoklu Ajan (Multi-Agent) Çevrimiçi Yapay Zeka Analiz Motoru:
+ * V15.0 Çoklu Ajan (Multi-Agent) Çevrimiçi Yapay Zeka Analiz Motoru:
  * - Fotoğraflarda: Yapı, eşya, yiyecek, doğa (gün batımı, çiçek), video oyunu (Bannerlord, LoL, Minecraft vb.)
  *   ve kullanıcının tanıttığı referans kişi fotoğrafı ("Mert / Ben" veya arkadaş) eşleştirmesi!
  * - Videolarda: ADTS AAC ses + GPT-OSS 20B Mantık Düzeltme Ajanı + Qwen 3.8 27B Vision.
@@ -416,11 +416,7 @@ object OnlineAiAnalyzer {
     private fun resolveActiveVisionModels(apiKey: String): List<String> {
         cachedVisionModels?.let { if (it.isNotEmpty()) return it }
 
-        val defaultModels = mutableListOf(
-            "qwen/qwen3.8-27b",
-            "meta-llama/llama-4-scout-17b-16e-instruct",
-            "meta-llama/llama-4-maverick-17b-128e-instruct"
-        )
+        val defaultModels = listOf("qwen/qwen3.8-27b")
         var conn: HttpURLConnection? = null
         try {
             val url = URL("https://api.groq.com/openai/v1/models")
@@ -440,13 +436,15 @@ object OnlineAiAnalyzer {
                         if (id.isNotBlank()) availableIds.add(id)
                     }
                     val prioritized = mutableListOf<String>()
-                    for (candidate in defaultModels) {
-                        if (candidate in availableIds) prioritized.add(candidate)
-                    }
-                    for (id in availableIds) {
-                        val low = id.lowercase()
-                        if ((low.contains("qwen") || low.contains("vision") || low.contains("scout") || low.contains("maverick") || low.contains("muse")) && id !in prioritized) {
-                            prioritized.add(id)
+                    if ("qwen/qwen3.8-27b" in availableIds) {
+                        prioritized.add("qwen/qwen3.8-27b")
+                    } else {
+                        for (id in availableIds) {
+                            val low = id.lowercase()
+                            if (low.contains("qwen") && (low.contains("vl") || low.contains("vision") || low.contains("3.8"))) {
+                                prioritized.add(id)
+                                break
+                            }
                         }
                     }
                     if (prioritized.isNotEmpty()) {
@@ -466,7 +464,7 @@ object OnlineAiAnalyzer {
     private suspend fun callGroqVisionJson(apiKey: String, base64JpegList: List<String>, prompt: String): JSONObject? {
         val models = resolveActiveVisionModels(apiKey)
         for (modelName in models) {
-            for (attempt in 1..3) {
+            for (attempt in 1..2) {
                 var conn: HttpURLConnection? = null
                 try {
                     val url = URL("https://api.groq.com/openai/v1/chat/completions")
@@ -474,7 +472,7 @@ object OnlineAiAnalyzer {
                         requestMethod = "POST"
                         doOutput = true
                         connectTimeout = 15000
-                        readTimeout = 30000
+                        readTimeout = 25000
                         setRequestProperty("Authorization", "Bearer $apiKey")
                         setRequestProperty("Content-Type", "application/json; charset=UTF-8")
                     }
@@ -525,8 +523,8 @@ object OnlineAiAnalyzer {
                         if (parsed != null) return parsed
                         break
                     } else if (code == 429) {
-                        val retrySec = conn.getHeaderField("retry-after")?.toLongOrNull() ?: (12L * attempt)
-                        delay((retrySec.coerceIn(4L, 35L)) * 1000L)
+                        val retrySec = conn.getHeaderField("retry-after")?.toLongOrNull() ?: (6L * attempt)
+                        delay((retrySec.coerceIn(4L, 15L)) * 1000L)
                     } else {
                         break
                     }

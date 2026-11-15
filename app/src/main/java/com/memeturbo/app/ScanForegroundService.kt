@@ -144,7 +144,7 @@ class ScanForegroundService : Service() {
             val indexer = VideoIndexer(this@ScanForegroundService)
             val db = MemeDatabase.getInstance(this@ScanForegroundService).memeDao()
             val prefs = getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
-            val ocrCheckedSet = prefs.getStringSet("ocr_checked_paths", emptySet())?.toMutableSet() ?: mutableSetOf()
+            val aiCheckedSet = prefs.getStringSet("ai_checked_paths_v15", emptySet())?.toMutableSet() ?: mutableSetOf()
             try {
                 stateFlow.value = ScanState(isRunning = true, statusMessage = "${albumInfo.name} kontrol ediliyor...")
 
@@ -217,21 +217,21 @@ class ScanForegroundService : Service() {
                                 indexer.extractImageData(file, item.albumName)
                             }
                             db.insertMeme(metadata)
-                            ocrCheckedSet.add(file.absolutePath)
+                            aiCheckedSet.add(file.absolutePath)
                             VideoIndexer.invalidateCacheFor(file.absolutePath)
                         } catch (e: Exception) {
                             e.printStackTrace()
                         }
                     }
 
-                    if (curNum % 24 == 0) {
-                        prefs.edit().putStringSet("ocr_checked_paths", ocrCheckedSet).apply()
+                    if (curNum % 20 == 0) {
+                        prefs.edit().putStringSet("ai_checked_paths_v15", aiCheckedSet).apply()
                         stateFlow.value = stateFlow.value.copy(refreshTick = stateFlow.value.refreshTick + 1)
                     }
                     delay(20)
                 }
 
-                prefs.edit().putStringSet("ocr_checked_paths", ocrCheckedSet).apply()
+                prefs.edit().putStringSet("ai_checked_paths_v15", aiCheckedSet).apply()
                 val totalDb = db.getCount()
                 stateFlow.value = ScanState(
                     isRunning = false,
@@ -256,7 +256,7 @@ class ScanForegroundService : Service() {
             val indexer = VideoIndexer(this@ScanForegroundService)
             val db = MemeDatabase.getInstance(this@ScanForegroundService).memeDao()
             val prefs = getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
-            val ocrCheckedSet = prefs.getStringSet("ocr_checked_paths", emptySet())?.toMutableSet() ?: mutableSetOf()
+            val aiCheckedSet = prefs.getStringSet("ai_checked_paths_v15", emptySet())?.toMutableSet() ?: mutableSetOf()
             try {
                 stateFlow.value = ScanState(isRunning = true, statusMessage = "🌐 AI çözümleme listesi hazırlanıyor...")
 
@@ -269,9 +269,14 @@ class ScanForegroundService : Service() {
                     if (albumInfo.isAll) list else list.filter { it.albumName == albumInfo.name }
                 }
 
+                // V15.0 Kesin Tekrar Önleme:
+                // - Elle (✏️) düzenlediklerine ASLA dokunma.
+                // - AI+Görsel tarafından daha önce kontrol edilmiş (aiCheckedSet) VEYA zaten iyi metni olanlara
+                //   "Eksik & Zayıfları Çöz" modunda bir daha ASLA dokunma!
                 val targetItems = allItems.filter { item ->
                     if (item.filePath in editedPaths) return@filter false
                     if (forceFullAlbum) return@filter true
+                    if (item.filePath in aiCheckedSet) return@filter false
 
                     val spoken = item.spokenText.replace("\u200B", "").trim()
                     val screen = VideoIndexer.filterWatermarks(item.screenText)
@@ -282,13 +287,7 @@ class ScanForegroundService : Service() {
                             !OnlineAiAnalyzer.isMusicOrEmptyTranscript(spoken) &&
                             !VideoIndexer.isWeakSpokenFiller(spoken)
                         val hasGoodScreen = screen.length >= 6
-                        val alreadyOcrChecked = item.filePath in ocrCheckedSet
-
-                        if (hasGoodSpeech && (hasGoodScreen || alreadyOcrChecked)) {
-                            false
-                        } else {
-                            !hasGoodSpeech || (!hasGoodScreen && !alreadyOcrChecked)
-                        }
+                        !hasGoodSpeech && !hasGoodScreen
                     } else {
                         val hasAiPhotoScene = visual.startsWith("🖼️")
                         !hasAiPhotoScene
@@ -323,7 +322,7 @@ class ScanForegroundService : Service() {
                         total = total,
                         statusMessage = msg
                     )
-                    if (curNum == 1 || curNum % 4 == 0) {
+                    if (curNum == 1 || curNum % 3 == 0) {
                         updateNotification(msg)
                     }
 
@@ -334,20 +333,7 @@ class ScanForegroundService : Service() {
                                 !OnlineAiAnalyzer.isMusicOrEmptyTranscript(oldSpoken) &&
                                 !VideoIndexer.isWeakSpokenFiller(oldSpoken)
 
-                            val fresh = if (item.isVideo && oldHasGoodSpeech && !forceFullAlbum) {
-                                val (dur, localOcr, localScene) = indexer.extractLocalVideoOcrAndScene(file)
-                                MemeVideo(
-                                    filePath = item.filePath,
-                                    fileName = item.fileName,
-                                    durationMs = if (item.durationMs > 0L) item.durationMs else dur,
-                                    spokenText = oldSpoken,
-                                    screenText = localOcr,
-                                    visualLabels = localScene.ifBlank { item.visualLabels },
-                                    isVideo = true,
-                                    lastModified = item.lastModified,
-                                    albumName = item.albumName
-                                )
-                            } else if (item.isVideo) {
+                            val fresh = if (item.isVideo) {
                                 indexer.extractVideoData(file, model, item.albumName)
                             } else {
                                 indexer.extractImageData(file, item.albumName)
@@ -372,21 +358,21 @@ class ScanForegroundService : Service() {
                                 screenText = finalScreen,
                                 visualLabels = finalVisual
                             )
-                            ocrCheckedSet.add(item.filePath)
+                            aiCheckedSet.add(item.filePath)
                             VideoIndexer.invalidateCacheFor(item.filePath)
                         } catch (e: Exception) {
                             e.printStackTrace()
                         }
                     }
 
-                    if (curNum % 10 == 0) {
-                        prefs.edit().putStringSet("ocr_checked_paths", ocrCheckedSet).apply()
+                    if (curNum % 6 == 0) {
+                        prefs.edit().putStringSet("ai_checked_paths_v15", aiCheckedSet).apply()
                         stateFlow.value = stateFlow.value.copy(refreshTick = stateFlow.value.refreshTick + 1)
                     }
                     delay(25)
                 }
 
-                prefs.edit().putStringSet("ocr_checked_paths", ocrCheckedSet).apply()
+                prefs.edit().putStringSet("ai_checked_paths_v15", aiCheckedSet).apply()
                 stateFlow.value = ScanState(
                     isRunning = false,
                     statusMessage = "✅ $total medya AI + Görsel Tanıma ile güncellendi!",

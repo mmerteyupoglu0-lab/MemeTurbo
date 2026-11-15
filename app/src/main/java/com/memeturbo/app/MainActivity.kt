@@ -21,6 +21,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
 import androidx.activity.OnBackPressedCallback
@@ -62,6 +63,7 @@ class MainActivity : AppCompatActivity() {
     private var lastObservedTick = -1
     private var cachedAllMemes: List<MemeVideo>? = null
     private var currentFilteredList: List<MemeVideo> = emptyList()
+    private var suppressNextSpinnerSelection = false
 
     private lateinit var scanControlRow: LinearLayout
     private lateinit var pauseResumeBtn: Button
@@ -132,13 +134,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         val title = TextView(this).apply {
-            text = "⚡ ReplikBul • MemeTurbo V14"
+            text = "⚡ ReplikBul • MemeTurbo V15"
             textSize = 20f
             setTextColor(Color.WHITE)
         }
 
         val privacyBanner = TextView(this).apply {
-            text = "🚀 V14 Turbo: 10x Hızlı Arama • Sıfır Donma • Fotoğrafta Kişi/Oyun/Mekân Tanıma • 3sn Sıralı Fotoğraf Geçişi"
+            text = "🚀 V15 Turbo: Sıfır Donma Thumbnail • Yenilemede Sadece Sayım • Tek Seferlik AI & Kişi Tanıma"
             textSize = 11.5f
             setTextColor(Color.parseColor("#38BDF8"))
             setPadding(0, dpToPx(6f), 0, dpToPx(8f))
@@ -352,9 +354,17 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.WHITE)
             textSize = 14f
             setSingleLine(true)
+            imeOptions = EditorInfo.IME_ACTION_SEARCH
             background = null
             setPadding(0, dpToPx(10f), 0, dpToPx(10f))
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnEditorActionListener { _, actionId, _ ->
+                if (actionId == EditorInfo.IME_ACTION_SEARCH || actionId == EditorInfo.IME_ACTION_DONE) {
+                    filterList(text.toString().trim(), immediate = true)
+                    hideKeyboard()
+                    true
+                } else false
+            }
         }
 
         clearSearchBtn = TextView(this).apply {
@@ -393,7 +403,7 @@ class MainActivity : AppCompatActivity() {
             layoutManager = gridLayoutManager
             setHasFixedSize(true)
             itemAnimator = null
-            setItemViewCacheSize(24)
+            setItemViewCacheSize(18)
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -468,7 +478,6 @@ class MainActivity : AppCompatActivity() {
         checkPermissionAndLoadAlbums()
         observeScanServiceState()
 
-        // 110ms debounce: Her tuşta 800+ videoyu tekrar taramak yerine kelime yazılırken yağ gibi akar!
         searchInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
@@ -597,17 +606,39 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * V15.0 Yenileme:
+     * Aşağı çekince taramayı OTOMATİK BAŞLATMAZ!
+     * Listeyi günceller ve seçili albümde taranacak kaç yeni medya kaldığını yazar.
+     */
     private fun refreshGalleryOnPullDown() {
         swipeRefresh.isRefreshing = false
         lifecycleScope.launch {
             cachedAllMemes = null
             VideoIndexer.clearAllCaches()
             loadAlbumsIntoSpinner()
-            if (!ScanForegroundService.stateFlow.value.isRunning) {
-                startIncrementalScanService()
-                Toast.makeText(this@MainActivity, "🔄 Galeri anında yenilendi!", Toast.LENGTH_SHORT).show()
+            val selectedAlbum = if (availableAlbums.isNotEmpty() && albumSpinner.selectedItemPosition in availableAlbums.indices) {
+                availableAlbums[albumSpinner.selectedItemPosition]
             } else {
-                Toast.makeText(this@MainActivity, "🔄 Liste güncellendi (tarama sürüyor)", Toast.LENGTH_SHORT).show()
+                VideoIndexer.AlbumInfo("🌟 Tüm Galeri (Hepsi)", 0, isAll = true)
+            }
+
+            val pendingCount = withContext(Dispatchers.IO) {
+                val indexer = VideoIndexer(this@MainActivity)
+                val db = MemeDatabase.getInstance(this@MainActivity).memeDao()
+                val existing = db.getAllIndexedPaths().toHashSet()
+                val media = indexer.queryGalleryMediaPublic(selectedAlbum)
+                media.count { it.path !in existing }
+            }
+
+            filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false, immediate = true)
+
+            if (!ScanForegroundService.stateFlow.value.isRunning) {
+                statusText.text = if (pendingCount > 0) {
+                    "🔄 Yenilendi! Taranacak $pendingCount yeni medya var ('Yenileri Tara ⚡' ile tarayabilirsin)."
+                } else {
+                    "✨ Galeri yenilendi! Taranacak yeni medya yok."
+                }
             }
         }
     }
@@ -637,12 +668,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         AlertDialog.Builder(this)
-            .setTitle("🌐 V14 Çoklu Ajan & Fotoğraf Tanıma")
+            .setTitle("🌐 V15 Çoklu Ajan & Fotoğraf Tanıma")
             .setMessage(
                 "Seçili albüm: $albumLabel\n\n" +
                 "$onlineStatus\n\n" +
-                "• Fotoğraflarda yapı, yemek, gün batımı, çiçek, oyun adı ve tanıttığın kişileri ('Mert ve arkadaşları...') bulur.\n" +
-                "• Not: Ücretsiz Groq kotası dakikada ~3–4 fotoğraf işlediği için fotoğraflar biraz daha yavaş ama detaylı taranır.\n" +
+                "• Daha önce AI ile taranmış olanlara TEKRAR dokunmaz, sadece eksik kalanları çözer.\n" +
+                "• Ücretsiz Groq Vision kotası dakikada ~3–4 fotoğraf işlediği için fotoğraflar biraz yavaş ama tam detaylı taranır.\n" +
                 "• ✏️ ile elle düzelttiğin kayıtlara kesinlikle dokunulmaz."
             )
             .setPositiveButton("⚡ Eksik & Fotoğrafları Çöz") { _, _ ->
@@ -1182,6 +1213,7 @@ class MainActivity : AppCompatActivity() {
 
             val names = availableAlbums.map { "${it.name} (${it.count} öğe)" }
             val spinnerAdapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, names)
+            suppressNextSpinnerSelection = true
             albumSpinner.adapter = spinnerAdapter
 
             if (prevAlbumName != null) {
@@ -1191,6 +1223,10 @@ class MainActivity : AppCompatActivity() {
 
             albumSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    if (suppressNextSpinnerSelection) {
+                        suppressNextSpinnerSelection = false
+                        return
+                    }
                     if (position in availableAlbums.indices) {
                         val chosen = availableAlbums[position]
                         selectedAlbumFilter = if (chosen.isAll) null else chosen.name
@@ -1199,8 +1235,6 @@ class MainActivity : AppCompatActivity() {
                 }
                 override fun onNothingSelected(parent: AdapterView<*>?) {}
             }
-
-            filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false, immediate = true)
         }
     }
 
