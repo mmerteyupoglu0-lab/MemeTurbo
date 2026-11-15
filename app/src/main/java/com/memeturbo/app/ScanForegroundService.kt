@@ -13,6 +13,9 @@ import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.atomic.AtomicInteger
 import java.io.File
 
 class ScanForegroundService : Service() {
@@ -290,55 +293,73 @@ class ScanForegroundService : Service() {
                 val targetImages = targetItems.filter { !it.isVideo }
                 var processedCount = 0
 
-                // 1) Videoları tek tek hızlı Whisper+Logic ile işle
-                for (item in targetVideos) {
-                    if (isStoppedFlag) break
-                    waitIfPaused()
-                    if (isStoppedFlag) break
+                // 1) Videoları 3'lü paralel motorla (3x hızlı) işle!
+                val videoSem = Semaphore(3)
+                val videoDoneCounter = AtomicInteger(0)
+                val checkedLock = Any()
 
-                    processedCount++
-                    val file = File(item.filePath)
-                    val shortName = VideoIndexer.cleanFileNameForDisplay(item.fileName).ifEmpty { item.fileName.take(20) }
-                    val msg = "🌐 AI Video ($processedCount/$total): $shortName"
-                    stateFlow.value = stateFlow.value.copy(
-                        isRunning = true,
-                        current = processedCount,
-                        total = total,
-                        statusMessage = msg
-                    )
-                    if (processedCount == 1 || processedCount % 4 == 0) updateNotification(msg)
+                coroutineScope {
+                    targetVideos.map { item ->
+                        async(Dispatchers.IO) {
+                            if (isStoppedFlag) return@async
+                            waitIfPaused()
+                            if (isStoppedFlag) return@async
 
-                    if (file.exists()) {
-                        try {
-                            val oldSpoken = item.spokenText.replace("\u200B", "").trim()
-                            val oldHasGoodSpeech = oldSpoken.isNotBlank() &&
-                                !OnlineAiAnalyzer.isMusicOrEmptyTranscript(oldSpoken) &&
-                                !VideoIndexer.isWeakSpokenFiller(oldSpoken)
+                            videoSem.withPermit {
+                                if (isStoppedFlag) return@withPermit
+                                waitIfPaused()
+                                if (isStoppedFlag) return@withPermit
 
-                            val fresh = indexer.extractVideoData(file, item.albumName)
-                            val newSpoken = fresh.spokenText.replace("\u200B", "").trim()
-                            val finalSpoken = when {
-                                !OnlineAiAnalyzer.isMusicOrEmptyTranscript(newSpoken) && !VideoIndexer.isWeakSpokenFiller(newSpoken) -> newSpoken
-                                oldHasGoodSpeech -> oldSpoken
-                                !OnlineAiAnalyzer.isMusicOrEmptyTranscript(newSpoken) && newSpoken.isNotBlank() -> newSpoken
-                                !OnlineAiAnalyzer.isMusicOrEmptyTranscript(oldSpoken) && oldSpoken.isNotBlank() -> oldSpoken
-                                else -> ""
+                                val file = File(item.filePath)
+                                val shortName = VideoIndexer.cleanFileNameForDisplay(item.fileName).ifEmpty { item.fileName.take(20) }
+                                val curDone = videoDoneCounter.incrementAndGet()
+                                val msg = "⚡ 3x AI Video ($curDone/$total): $shortName"
+                                stateFlow.value = stateFlow.value.copy(
+                                    isRunning = true,
+                                    current = curDone,
+                                    total = total,
+                                    statusMessage = msg
+                                )
+                                if (curDone == 1 || curDone % 5 == 0) updateNotification(msg)
+
+                                if (file.exists()) {
+                                    try {
+                                        val oldSpoken = item.spokenText.replace("\u200B", "").trim()
+                                        val oldHasGoodSpeech = oldSpoken.isNotBlank() &&
+                                            !OnlineAiAnalyzer.isMusicOrEmptyTranscript(oldSpoken) &&
+                                            !VideoIndexer.isWeakSpokenFiller(oldSpoken)
+
+                                        val fresh = indexer.extractVideoData(file, item.albumName)
+                                        val newSpoken = fresh.spokenText.replace("\u200B", "").trim()
+                                        val finalSpoken = when {
+                                            !OnlineAiAnalyzer.isMusicOrEmptyTranscript(newSpoken) && !VideoIndexer.isWeakSpokenFiller(newSpoken) -> newSpoken
+                                            oldHasGoodSpeech -> oldSpoken
+                                            !OnlineAiAnalyzer.isMusicOrEmptyTranscript(newSpoken) && newSpoken.isNotBlank() -> newSpoken
+                                            !OnlineAiAnalyzer.isMusicOrEmptyTranscript(oldSpoken) && oldSpoken.isNotBlank() -> oldSpoken
+                                            else -> ""
+                                        }
+                                        val oldScreen = VideoIndexer.filterWatermarks(item.screenText)
+                                        val finalScreen = fresh.screenText.ifBlank { oldScreen }
+                                        val finalVisual = fresh.visualLabels.ifBlank { VideoIndexer.cleanVisualLabelsString(item.visualLabels) }
+
+                                        db.updateFields(item.filePath, finalSpoken, finalScreen, finalVisual)
+                                        synchronized(checkedLock) {
+                                            aiCheckedSet.add(item.filePath)
+                                        }
+                                        VideoIndexer.invalidateCacheFor(item.filePath)
+                                    } catch (_: Exception) {}
+                                }
+                                if (curDone % 6 == 0) {
+                                    synchronized(checkedLock) {
+                                        prefs.edit().putStringSet("ai_checked_paths_v15", aiCheckedSet).apply()
+                                    }
+                                    stateFlow.value = stateFlow.value.copy(refreshTick = stateFlow.value.refreshTick + 1)
+                                }
                             }
-                            val oldScreen = VideoIndexer.filterWatermarks(item.screenText)
-                            val finalScreen = fresh.screenText.ifBlank { oldScreen }
-                            val finalVisual = fresh.visualLabels.ifBlank { VideoIndexer.cleanVisualLabelsString(item.visualLabels) }
-
-                            db.updateFields(item.filePath, finalSpoken, finalScreen, finalVisual)
-                            aiCheckedSet.add(item.filePath)
-                            VideoIndexer.invalidateCacheFor(item.filePath)
-                        } catch (_: Exception) {}
-                    }
-                    if (processedCount % 6 == 0) {
-                        prefs.edit().putStringSet("ai_checked_paths_v15", aiCheckedSet).apply()
-                        stateFlow.value = stateFlow.value.copy(refreshTick = stateFlow.value.refreshTick + 1)
-                    }
-                    delay(20)
+                        }
+                    }.awaitAll()
                 }
+                processedCount = videoDoneCounter.get()
 
                 // 2) Fotoğrafları 4'lü kolajlar halinde 4x hızlı çöz!
                 val imgChunks = targetImages.chunked(4)

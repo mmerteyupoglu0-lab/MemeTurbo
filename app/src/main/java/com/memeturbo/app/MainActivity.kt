@@ -224,7 +224,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val title = TextView(this).apply {
-            text = "⚡ ReplikBul • MemeTurbo V19"
+            text = "⚡ ReplikBul • MemeTurbo V20 Beta"
             textSize = 18.5f
             setTextColor(Color.WHITE)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -1229,9 +1229,13 @@ class MainActivity : AppCompatActivity() {
             dialogRef?.dismiss()
             showStepByStepPermissionsDialog()
         })
-        permRow.addView(makePillBtn("☁️ G.Foto İçe Aktar", false, 1f, Color.parseColor("#EA580C")) {
+        permRow.addView(makePillBtn("☁️ G.Foto", false, 0.85f, Color.parseColor("#EA580C")) {
             dialogRef?.dismiss()
             showGooglePhotosImportDialog()
+        })
+        permRow.addView(makePillBtn("🔑 API", false, 0.7f, Color.parseColor("#0D9488")) {
+            dialogRef?.dismiss()
+            showCustomApiKeyDialog()
         })
         rootBox.addView(permRow)
 
@@ -1241,6 +1245,76 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Kapat", null)
             .create()
         dialogRef.show()
+    }
+
+    private fun showAddToCustomAlbumDialog(meme: MemeVideo) {
+        val customMap = AppStrings.getSavedCustomAiAlbums(this)
+        val existingNames = customMap.keys.toList()
+        val options = (existingNames + listOf("➕ Yeni Özel Albüm Oluştur...")).toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle("📁 Bu Medyayı Albüme Ekle")
+            .setItems(options) { _, which ->
+                if (which < existingNames.size) {
+                    val albName = existingNames[which]
+                    val updatedSet = (customMap[albName] ?: emptySet()).toMutableSet()
+                    updatedSet.add(meme.filePath)
+                    AppStrings.saveCustomAiAlbum(this, albName, updatedSet)
+                    loadAlbumsIntoSpinner()
+                    Toast.makeText(this, "✅ '$albName' albümüne eklendi!", Toast.LENGTH_SHORT).show()
+                } else {
+                    val input = EditText(this).apply {
+                        hint = "Yeni albüm adı (Örn: En İyiler)"
+                        setTextColor(Color.WHITE)
+                        setHintTextColor(Color.GRAY)
+                    }
+                    AlertDialog.Builder(this)
+                        .setTitle("➕ Yeni Özel Albüm")
+                        .setView(input)
+                        .setPositiveButton("Oluştur & Ekle") { _, _ ->
+                            val raw = input.text.toString().trim().ifBlank { "Favori Memeler" }
+                            AppStrings.saveCustomAiAlbum(this, raw, setOf(meme.filePath))
+                            loadAlbumsIntoSpinner()
+                            Toast.makeText(this, "✅ '🤖 $raw' albümü oluşturuldu ve eklendi!", Toast.LENGTH_SHORT).show()
+                        }
+                        .setNegativeButton("İptal", null)
+                        .show()
+                }
+            }
+            .setNegativeButton("İptal", null)
+            .show()
+    }
+
+    private fun showCustomApiKeyDialog() {
+        val prefs = getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+        val curCustom = prefs.getString("custom_groq_key", "") ?: ""
+        val input = EditText(this).apply {
+            hint = "gsk_... (Boş bırakırsan varsayılan anahtar çalışır)"
+            setText(curCustom)
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.GRAY)
+            textSize = 12.5f
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("🔑 Kişisel Groq API Anahtarı")
+            .setMessage(
+                "Uygulama varsayılan ücretsiz anahtarla hazır gelir.\n\n" +
+                "Eğer birden fazla kişi aynı anda yoğun tarama yaparsa ve kota dolarsa, console.groq.com adresinden ücretsiz kendi anahtarını alıp buraya yapıştırabilirsin."
+            )
+            .setView(input)
+            .setPositiveButton("Kaydet") { _, _ ->
+                val v = input.text.toString().trim()
+                if (v.isBlank()) {
+                    prefs.edit().remove("custom_groq_key").apply()
+                    Toast.makeText(this, "✅ Varsayılan API anahtarına dönüldü.", Toast.LENGTH_SHORT).show()
+                } else {
+                    prefs.edit().putString("custom_groq_key", v).apply()
+                    Toast.makeText(this, "✅ Kişisel Groq API anahtarın kaydedildi!", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("İptal", null)
+            .show()
     }
 
     private fun showPersonTrainDialog() {
@@ -1972,8 +2046,28 @@ class MainActivity : AppCompatActivity() {
         sequentialToggleBtn?.let { btnRow1.addView(it) }
         btnRow1.addView(nextBtn)
 
+        val addToAlbumBtn = Button(this).apply {
+            text = "📁 Albüm"
+            setTextColor(Color.WHITE)
+            textSize = 11f
+            isAllCaps = false
+            setPadding(dpToPx(10f), 0, dpToPx(10f), 0)
+            background = GradientDrawable().apply {
+                cornerRadius = dpToPx(16f).toFloat()
+                setColor(Color.parseColor("#0D9488"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                dpToPx(36f)
+            ).apply { rightMargin = dpToPx(6f) }
+            setOnClickListener {
+                currentPreviewMeme?.let { m -> showAddToCustomAlbumDialog(m) }
+            }
+        }
+
         btnRow2.addView(aiSingleBtn)
         btnRow2.addView(fixBtn)
+        btnRow2.addView(addToAlbumBtn)
         btnRow2.addView(closeBtn)
 
         contentBox.addView(internalVideoView)

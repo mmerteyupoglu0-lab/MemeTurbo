@@ -527,7 +527,7 @@ object OnlineAiAnalyzer {
                         break
                     } else if (code == 429) {
                         val retrySec = conn.getHeaderField("retry-after")?.toLongOrNull() ?: (6L * attempt)
-                        delay((retrySec.coerceIn(4L, 15L)) * 1000L)
+                        delay((retrySec.coerceIn(3L, 8L)) * 1000L)
                     } else {
                         break
                     }
