@@ -52,13 +52,13 @@ class MemeGridAdapter(
         }
 
         private fun getDiskThumbFile(cacheDir: File, targetPath: String, lastMod: Long): File {
-            val dir = File(cacheDir, "thumbs_v16")
+            val dir = File(cacheDir, "thumbs_v19")
             if (!dir.exists()) dir.mkdirs()
             val hash = "${targetPath}_${lastMod}".hashCode().toUInt().toString(16)
             return File(dir, "t_$hash.jpg")
         }
 
-        private fun scaleDownBitmap(raw: Bitmap, maxDim: Int = 200): Bitmap {
+        private fun scaleDownBitmap(raw: Bitmap, maxDim: Int = 480): Bitmap {
             val w = raw.width
             val h = raw.height
             if (w <= 0 || h <= 0) return raw
@@ -81,7 +81,7 @@ class MemeGridAdapter(
                 val frame = retriever.getFrameAtTime(-1L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                     ?: retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 if (frame != null) {
-                    return scaleDownBitmap(frame, 200)
+                    return scaleDownBitmap(frame, 480)
                 }
             } catch (_: Exception) {
             } finally {
@@ -90,7 +90,7 @@ class MemeGridAdapter(
             return try {
                 @Suppress("DEPRECATION")
                 val fallback = ThumbnailUtils.createVideoThumbnail(targetPath, MediaStore.Images.Thumbnails.MINI_KIND)
-                if (fallback != null) scaleDownBitmap(fallback, 200) else null
+                if (fallback != null) scaleDownBitmap(fallback, 480) else null
             } catch (_: Exception) {
                 null
             }
@@ -102,15 +102,15 @@ class MemeGridAdapter(
                 BitmapFactory.decodeFile(targetPath, bounds)
                 if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
                 var sample = 1
-                while (bounds.outWidth / sample > 240 || bounds.outHeight / sample > 240) {
+                while (bounds.outWidth / sample > 540 || bounds.outHeight / sample > 540) {
                     sample *= 2
                 }
                 val opts = BitmapFactory.Options().apply {
                     inSampleSize = sample.coerceAtLeast(1)
-                    inPreferredConfig = Bitmap.Config.RGB_565
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
                 }
                 val decoded = BitmapFactory.decodeFile(targetPath, opts) ?: return null
-                scaleDownBitmap(decoded, 200)
+                scaleDownBitmap(decoded, 480)
             } catch (_: Exception) {
                 null
             }
@@ -353,7 +353,7 @@ class MemeGridAdapter(
                             if (generated != null) {
                                 try {
                                     FileOutputStream(diskFile).use { out ->
-                                        generated.compress(Bitmap.CompressFormat.JPEG, 75, out)
+                                        generated.compress(Bitmap.CompressFormat.JPEG, 90, out)
                                     }
                                 } catch (_: Exception) {}
                             }

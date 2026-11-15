@@ -135,7 +135,10 @@ class MainActivity : AppCompatActivity() {
                         .edit()
                         .putString("ui_wallpaper_path", savedPath)
                         .apply()
-                    Toast.makeText(this@MainActivity, "🖼️ Özel arka plan duvar kağıdı uygulandı!", Toast.LENGTH_SHORT).show()
+                    withContext(Dispatchers.IO) {
+                        AppStrings.extractAndSaveWallpaperColors(this@MainActivity, savedPath)
+                    }
+                    Toast.makeText(this@MainActivity, "🎨 Duvar kağıdı ve otomatik renk uyumu uygulandı!", Toast.LENGTH_SHORT).show()
                     recreate()
                 }
             }
@@ -162,6 +165,11 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        val navPrefs = getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+        val savedAlb = navPrefs.getString("saved_album_filter", "") ?: ""
+        selectedAlbumFilter = if (savedAlb.isBlank()) null else savedAlb
+        currentFilter = navPrefs.getInt("saved_tab_filter", 0).coerceIn(0, 2)
 
         val theme = AppStrings.getTheme(this)
         val strings = AppStrings.tr(this)
@@ -216,7 +224,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val title = TextView(this).apply {
-            text = "⚡ ReplikBul • MemeTurbo V18"
+            text = "⚡ ReplikBul • MemeTurbo V19"
             textSize = 18.5f
             setTextColor(Color.WHITE)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -522,13 +530,33 @@ class MainActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
-            setOnTouchListener { _, event ->
-                if (event.action == MotionEvent.ACTION_DOWN) {
-                    hideKeyboard()
+            var swipeStartX = 0f
+            var swipeStartY = 0f
+            addOnItemTouchListener(object : RecyclerView.SimpleOnItemTouchListener() {
+                override fun onInterceptTouchEvent(rv: RecyclerView, e: MotionEvent): Boolean {
+                    when (e.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            swipeStartX = e.x
+                            swipeStartY = e.y
+                            hideKeyboard()
+                        }
+                        MotionEvent.ACTION_UP -> {
+                            val dx = e.x - swipeStartX
+                            val dy = e.y - swipeStartY
+                            if (abs(dx) > dpToPx(42f) && abs(dx) > abs(dy) * 1.15f) {
+                                if (dx < 0 && currentFilter < 2) {
+                                    switchTab(currentFilter + 1)
+                                    return true
+                                } else if (dx > 0 && currentFilter > 0) {
+                                    switchTab(currentFilter - 1)
+                                    return true
+                                }
+                            }
+                        }
+                    }
+                    return false
                 }
-                tabSwipeDetector.onTouchEvent(event)
-                false
-            }
+            })
             addOnScrollListener(object : RecyclerView.OnScrollListener() {
                 override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
                     if (newState == RecyclerView.SCROLL_STATE_DRAGGING) {
@@ -893,6 +921,7 @@ class MainActivity : AppCompatActivity() {
                 ).apply { bottomMargin = dpToPx(7f) }
                 setOnClickListener {
                     selectedAlbumFilter = if (alb.isAll) null else alb.name
+                    persistNavState()
                     updateAlbumButtonLabel()
                     dialogRef?.dismiss()
                     filterList(searchInput.text.toString().trim(), restoreScrollWhenEmpty = false, immediate = true)
@@ -1112,7 +1141,7 @@ class MainActivity : AppCompatActivity() {
         })
         if (hasWp) {
             wpRow.addView(makePillBtn("🗑️", false, 0.5f, Color.parseColor("#DC2626")) {
-                prefs.edit().remove("ui_wallpaper_path").apply()
+                prefs.edit().remove("ui_wallpaper_path").putBoolean("wp_auto_theme_active", false).apply()
                 dialogRef?.dismiss()
                 recreate()
             })
@@ -1123,9 +1152,17 @@ class MainActivity : AppCompatActivity() {
         addSectionTitle("🎨 Renk Teması")
         val themeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val curThemeId = prefs.getInt("ui_theme_id", 0)
+        val isAutoWp = hasWp && prefs.getBoolean("wp_auto_theme_active", true)
+        if (hasWp) {
+            themeRow.addView(makePillBtn("🎨 Oto", isAutoWp, 0.9f, theme.accentHex) {
+                prefs.edit().putBoolean("wp_auto_theme_active", true).apply()
+                dialogRef?.dismiss()
+                recreate()
+            })
+        }
         for ((idx, pal) in AppStrings.themes.withIndex()) {
-            themeRow.addView(makePillBtn(pal.nameTr, curThemeId == idx, 1f, pal.accentHex) {
-                prefs.edit().putInt("ui_theme_id", idx).apply()
+            themeRow.addView(makePillBtn(pal.nameTr, !isAutoWp && curThemeId == idx, 1f, pal.accentHex) {
+                prefs.edit().putInt("ui_theme_id", idx).putBoolean("wp_auto_theme_active", false).apply()
                 dialogRef?.dismiss()
                 recreate()
             })
@@ -1246,8 +1283,17 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun persistNavState() {
+        getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .putString("saved_album_filter", selectedAlbumFilter ?: "")
+            .putInt("saved_tab_filter", currentFilter)
+            .apply()
+    }
+
     private fun switchTab(newFilter: Int) {
         currentFilter = newFilter
+        persistNavState()
         updateTabColors()
         filterList(searchInput.text.toString().trim(), immediate = true)
     }

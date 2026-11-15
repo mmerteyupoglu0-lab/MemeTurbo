@@ -1,6 +1,8 @@
 package com.memeturbo.app
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import org.json.JSONArray
 import org.json.JSONObject
@@ -88,8 +90,95 @@ object AppStrings {
         return prefs.getFloat("ui_glass_alpha", 0.72f).coerceIn(0.35f, 0.95f)
     }
 
+
+    fun extractAndSaveWallpaperColors(context: Context, imagePath: String) {
+        try {
+            val opts = BitmapFactory.Options().apply { inSampleSize = 8 }
+            val raw = BitmapFactory.decodeFile(imagePath, opts) ?: return
+            val small = Bitmap.createScaledBitmap(raw, 24, 24, true)
+            if (small != raw) raw.recycle()
+
+            var sumR = 0L
+            var sumG = 0L
+            var sumB = 0L
+            var count = 0L
+
+            var bestSat = -1f
+            var bestAccent = Color.parseColor("#0284C7")
+            val hsv = FloatArray(3)
+
+            for (y in 0 until 24) {
+                for (x in 0 until 24) {
+                    val px = small.getPixel(x, y)
+                    val r = Color.red(px)
+                    val g = Color.green(px)
+                    val b = Color.blue(px)
+                    sumR += r
+                    sumG += g
+                    sumB += b
+                    count++
+
+                    Color.RGBToHSV(r, g, b, hsv)
+                    // Canlı ama çok koyu/çok beyaz olmayan vurgu rengini seç
+                    if (hsv[1] > bestSat && hsv[2] in 0.35f..0.95f) {
+                        bestSat = hsv[1]
+                        bestAccent = px
+                    }
+                }
+            }
+            small.recycle()
+
+            val avgR = (sumR / count).toInt().coerceIn(0, 255)
+            val avgG = (sumG / count).toInt().coerceIn(0, 255)
+            val avgB = (sumB / count).toInt().coerceIn(0, 255)
+
+            // Okunabilirlik için arka plan kart ve başlık tonlarını koyulaştırılmış ama duvar kağıdıyla aynı renkte tut
+            val headerColor = Color.rgb((avgR * 0.28f).toInt(), (avgG * 0.28f).toInt(), (avgB * 0.28f).toInt())
+            val cardColor = Color.rgb((avgR * 0.34f).toInt(), (avgG * 0.34f).toInt(), (avgB * 0.34f).toInt())
+            val strokeColor = Color.rgb((avgR * 0.60f).toInt().coerceAtLeast(45), (avgG * 0.60f).toInt().coerceAtLeast(45), (avgB * 0.60f).toInt().coerceAtLeast(45))
+
+            Color.colorToHSV(bestAccent, hsv)
+            hsv[1] = hsv[1].coerceAtLeast(0.55f)
+            hsv[2] = hsv[2].coerceIn(0.65f, 0.90f)
+            val vividAccent = Color.HSVToColor(hsv)
+            val secBtn = Color.rgb((Color.red(vividAccent) * 0.45f).toInt(), (Color.green(vividAccent) * 0.45f).toInt(), (Color.blue(vividAccent) * 0.45f).toInt())
+
+            context.getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean("wp_palette_ready", true)
+                .putInt("wp_header_hex", headerColor)
+                .putInt("wp_card_hex", cardColor)
+                .putInt("wp_stroke_hex", strokeColor)
+                .putInt("wp_accent_hex", vividAccent)
+                .putInt("wp_sec_hex", secBtn)
+                .putBoolean("wp_auto_theme_active", true)
+                .apply()
+        } catch (_: Exception) {}
+    }
+
     fun getTheme(context: Context): ThemePalette {
         val prefs = context.getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+        val hasWp = getWallpaperPath(context).isNotBlank()
+        val autoWpTheme = prefs.getBoolean("wp_auto_theme_active", true)
+        if (hasWp && autoWpTheme && prefs.getBoolean("wp_palette_ready", false)) {
+            val hHex = prefs.getInt("wp_header_hex", themes[0].headerHex)
+            val cHex = prefs.getInt("wp_card_hex", themes[0].cardHex)
+            val sHex = prefs.getInt("wp_stroke_hex", themes[0].cardStrokeHex)
+            val aHex = prefs.getInt("wp_accent_hex", themes[0].accentHex)
+            val secHex = prefs.getInt("wp_sec_hex", themes[0].secondaryBtnHex)
+            return ThemePalette(
+                id = 99,
+                nameTr = "🎨 Duvar Kağıdı Uyumu",
+                bgHex = hHex,
+                headerHex = hHex,
+                cardHex = cHex,
+                cardStrokeHex = sHex,
+                accentHex = aHex,
+                secondaryBtnHex = secHex,
+                textPrimaryHex = Color.WHITE,
+                textHighlightHex = Color.parseColor("#FDE047")
+            )
+        }
         val idx = prefs.getInt("ui_theme_id", 0).coerceIn(0, themes.lastIndex)
         return themes[idx]
     }
@@ -145,7 +234,7 @@ object AppStrings {
     fun tr(context: Context): Strings {
         return when (getLang(context)) {
             "en" -> Strings(
-                subtitleBanner = "🚀 V18 Pro: 4x Fast AI • Glass Wallpaper • Smart Similar Photo Match",
+                subtitleBanner = "🚀 V19 HD: 4x Fast AI • Glass Wallpaper • Smart Similar Photo Match",
                 btnAiAlbum = "✨ AI Album",
                 btnPerson = "👤 Face ID",
                 btnGPhotos = "☁️ G.Photos",
@@ -183,7 +272,7 @@ object AppStrings {
                 onboardingMsg = "Choisissez comment organiser vos vidéos et photos :"
             )
             "it" -> Strings(
-                subtitleBanner = "🚀 V18 Pro: IA 4x Veloce • Sfondo Vetro • Foto Simili",
+                subtitleBanner = "🚀 V19 HD: IA 4x Veloce • Sfondo Vetro • Foto Simili",
                 btnAiAlbum = "✨ Album IA",
                 btnPerson = "👤 Volto",
                 btnGPhotos = "☁️ G.Foto",
@@ -202,7 +291,7 @@ object AppStrings {
                 onboardingMsg = "Scegli come organizzare video e foto:"
             )
             "es" -> Strings(
-                subtitleBanner = "🚀 V18 Pro: IA 4x Rápida • Fondo Cristal • Fotos Similares",
+                subtitleBanner = "🚀 V19 HD: IA 4x Rápida • Fondo Cristal • Fotos Similares",
                 btnAiAlbum = "✨ Álbum IA",
                 btnPerson = "👤 Rostro",
                 btnGPhotos = "☁️ G.Fotos",
@@ -221,7 +310,7 @@ object AppStrings {
                 onboardingMsg = "Elige cómo organizar tus videos y fotos:"
             )
             "ru" -> Strings(
-                subtitleBanner = "🚀 V18 Pro: ИИ в 4x быстрее • Стекло-фон • Похожие фото",
+                subtitleBanner = "🚀 V19 HD: ИИ в 4x быстрее • Стекло-фон • Похожие фото",
                 btnAiAlbum = "✨ ИИ Альбом",
                 btnPerson = "👤 Лицо",
                 btnGPhotos = "☁️ G.Фото",
@@ -240,7 +329,7 @@ object AppStrings {
                 onboardingMsg = "Выберите режим сортировки видео и фото:"
             )
             "de" -> Strings(
-                subtitleBanner = "🚀 V18 Pro: 4x Schnelle KI • Glas-Hintergrund • Ähnliche Fotos",
+                subtitleBanner = "🚀 V19 HD: 4x Schnelle KI • Glas-Hintergrund • Ähnliche Fotos",
                 btnAiAlbum = "✨ KI-Album",
                 btnPerson = "👤 Gesicht",
                 btnGPhotos = "☁️ G.Fotos",
@@ -259,7 +348,7 @@ object AppStrings {
                 onboardingMsg = "Wähle aus, wie Videos und Fotos sortiert werden:"
             )
             "ar" -> Strings(
-                subtitleBanner = "🚀 V18 Pro: ذكاء أسرع 4x • خلفية زجاجية • مطابقة الصور",
+                subtitleBanner = "🚀 V19 HD: ذكاء أسرع 4x • خلفية زجاجية • مطابقة الصور",
                 btnAiAlbum = "✨ ألبوم ذكي",
                 btnPerson = "👤 الوجه",
                 btnGPhotos = "☁️ صور Google",
@@ -278,7 +367,7 @@ object AppStrings {
                 onboardingMsg = "اختر طريقة تنظيم الفيديوهات والصور:"
             )
             else -> Strings(
-                subtitleBanner = "🚀 V18 Pro: 4x Hızlı AI • Özel Duvar Kağıdı & Saydam Cam • Benzer Foto Eşleme",
+                subtitleBanner = "🚀 V19 HD: 4x Hızlı AI • Özel Duvar Kağıdı & Saydam Cam • Benzer Foto Eşleme",
                 btnAiAlbum = "✨ AI Albüm",
                 btnPerson = "👤 Kişi",
                 btnGPhotos = "☁️ G.Foto",
