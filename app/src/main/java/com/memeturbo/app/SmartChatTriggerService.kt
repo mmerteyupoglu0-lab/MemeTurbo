@@ -102,22 +102,15 @@ class SmartChatTriggerService : AccessibilityService() {
                         searchPanelView = null
                     }
                 }
-                AccessibilityEvent.TYPE_VIEW_FOCUSED -> {
-                    if (isEditableInputEvent(event)) {
-                        // Boşta kaldıktan sonra mesaj kutusuna ilk dokunuş çoğu zaman FOCUS üretir;
-                        // bunu 1. tık olarak sayarak 2. tıkta panelin anında açılmasını sağla!
-                        lastInputTapTime = SystemClock.elapsedRealtime()
-                        lastInputPackage = pkg
-                    }
-                }
                 AccessibilityEvent.TYPE_VIEW_CLICKED -> {
                     if (isEditableInputEvent(event)) {
                         val now = SystemClock.elapsedRealtime()
                         val elapsed = now - lastInputTapTime
-                        if (lastInputPackage == pkg && elapsed in 45L..900L) {
+                        // Yalnızca gerçek 2 ayrı tıklamada aç (100ms altı çift olay sekmesi, 650ms üstü ayrı dokunuştur)
+                        if (lastInputPackage == pkg && elapsed in 100L..650L) {
                             lastInputTapTime = 0L
                             showGameTurboSearchPanel()
-                        } else {
+                        } else if (elapsed > 90L || lastInputTapTime == 0L) {
                             lastInputTapTime = now
                             lastInputPackage = pkg
                         }

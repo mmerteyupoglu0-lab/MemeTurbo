@@ -225,7 +225,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val title = TextView(this).apply {
-            text = "⚡ ReplikBul • MemeTurbo V20.1"
+            text = "⚡ ReplikBul • MemeTurbo V20.2"
             textSize = 18.5f
             setTextColor(Color.WHITE)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
