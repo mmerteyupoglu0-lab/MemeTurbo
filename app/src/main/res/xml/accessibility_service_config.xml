@@ -3,6 +3,7 @@
     android:accessibilityEventTypes="typeWindowStateChanged|typeViewFocused|typeViewClicked"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
+    android:packageNames="com.instagram.android,com.whatsapp,com.whatsapp.w4b,org.telegram.messenger,com.discord,com.facebook.orca,com.twitter.android,com.zhiliaoapp.musically"
     android:canRetrieveWindowContent="true"
     android:description="@string/accessibility_service_desc"
-    android:notificationTimeout="100" />
+    android:notificationTimeout="50" />

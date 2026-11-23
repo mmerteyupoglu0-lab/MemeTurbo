@@ -11,6 +11,7 @@ import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
@@ -224,7 +225,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val title = TextView(this).apply {
-            text = "⚡ ReplikBul • MemeTurbo V20 Beta"
+            text = "⚡ ReplikBul • MemeTurbo V20.1"
             textSize = 18.5f
             setTextColor(Color.WHITE)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -1040,13 +1041,48 @@ class MainActivity : AppCompatActivity() {
             } catch (_: Exception) {}
         }
 
+        val isAccAlive = SmartChatTriggerService.isServiceAlive
         addStepCard(
             "4. Adım: Çift Tık Klavye Tetikleyici (Erişilebilirlik)",
-            "Ayarlar -> Erişilebilirlik -> İndirilen Uygulamalar / Yüklü Hizmetler -> MemeTurbo'yu AÇ.",
-            "🚀 Erişilebilirlik Ayarlarına Git",
-            false
+            if (isAccAlive) "Çift tık servisi şu an aktif ve çalışıyor!" else "Ayarlar -> Erişilebilirlik -> İndirilen Uygulamalar -> MemeTurbo'yu AÇ (hata veriyorsa kapatıp tekrar aç).",
+            if (isAccAlive) "✅ Çift Tık Servisi Aktif" else "🚀 Erişilebilirlik Ayarlarına Git",
+            isAccAlive
         ) {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
+
+        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val isIgnoringBattery = pm?.isIgnoringBatteryOptimizations(packageName) == true
+        addStepCard(
+            "5. Adım: Arka Planda Kapanmayı Önle (Pil Kısıtlaması Yok)",
+            "Bir süre kullanılmayınca telefonun çift tık servisini kapatmaması için pil kısıtlamasını kaldırman gerekir.",
+            if (isIgnoringBattery) "✅ Pil Kısıtlaması Kaldırıldı" else "🔋 Pil Kısıtlamasını Kaldır (Tek Tık)",
+            isIgnoringBattery
+        ) {
+            try {
+                startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                })
+            } catch (_: Exception) {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            }
+        }
+
+        addStepCard(
+            "6. Adım: Xiaomi / HyperOS Otomatik Başlatma & Son Uygulamalar Kilidi",
+            "Xiaomi telefonlarda 'Arka Planda Otomatik Başlatma'yı aç ve Son Uygulamalar ekranında MemeTurbo'ya basılı tutup Kilit (🔒) simgesine dokun.",
+            "⚡ Otomatik Başlatma Ayarını Aç",
+            false
+        ) {
+            try {
+                startActivity(Intent("miui.intent.action.OP_AUTO_START").addCategory(Intent.CATEGORY_DEFAULT))
+            } catch (_: Exception) {
+                try {
+                    startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.parse("package:$packageName")
+                    })
+                } catch (_: Exception) {}
+            }
         }
 
         AlertDialog.Builder(this)

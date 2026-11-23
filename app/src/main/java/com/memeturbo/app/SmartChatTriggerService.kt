@@ -9,6 +9,7 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.os.SystemClock
 import android.text.Editable
 import android.text.TextWatcher
 import android.util.TypedValue
@@ -27,13 +28,18 @@ import java.io.File
 
 class SmartChatTriggerService : AccessibilityService() {
 
-    private lateinit var windowManager: WindowManager
+    companion object {
+        @Volatile
+        var isServiceAlive: Boolean = false
+    }
+
     private var searchPanelView: View? = null
     private var overlayVideoViewRef: VideoView? = null
     private var currentChatPackage: String? = null
-    private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var serviceScope: CoroutineScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
-    private var lastClickTime = 0L
+    private var lastInputTapTime = 0L
+    private var lastInputPackage: String? = null
     private var overlaySavedScrollPos = 0
     private var overlaySavedScrollOffset = 0
     private var isOverlayRestoringScroll = false
@@ -50,36 +56,94 @@ class SmartChatTriggerService : AccessibilityService() {
         "com.zhiliaoapp.musically"
     )
 
+    private fun getWm(): WindowManager {
+        return getSystemService(WINDOW_SERVICE) as WindowManager
+    }
+
+    private fun ensureScope(): CoroutineScope {
+        if (!serviceScope.isActive) {
+            serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+        }
+        return serviceScope
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
-        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        val prefs = getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
-        val saved = prefs.getString("overlay_album", null)
-        selectedOverlayAlbum = if (saved.isNullOrBlank()) null else saved
+        isServiceAlive = true
+        ensureScope()
+        try {
+            val prefs = getSharedPreferences("memeturbo_prefs", Context.MODE_PRIVATE)
+            val saved = prefs.getString("overlay_album", null)
+            selectedOverlayAlbum = if (saved.isNullOrBlank()) null else saved
+        } catch (_: Exception) {}
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        isServiceAlive = false
+        closeSearchPanel()
+        return super.onUnbind(intent)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        val pkg = event?.packageName?.toString() ?: return
-        if (pkg !in allowedChatPackages) return
+        try {
+            val pkg = event?.packageName?.toString() ?: return
+            if (pkg !in allowedChatPackages) return
 
-        currentChatPackage = pkg
+            currentChatPackage = pkg
 
-        // Sadece tıklama olaylarını dinle; her odak değişiminde event.source IPC çağrısı yaparak WhatsApp'ı yorma!
-        if (event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
-            val clsName = event.className?.toString() ?: ""
-            val isInputByClass = clsName.contains("EditText", ignoreCase = true) ||
-                clsName.contains("AutoComplete", ignoreCase = true)
-            val isInput = isInputByClass || (try { event.source?.isEditable == true } catch (_: Exception) { false })
-
-            if (isInput) {
-                val now = System.currentTimeMillis()
-                if (now - lastClickTime in 50..850) {
-                    showGameTurboSearchPanel()
-                    lastClickTime = 0L
-                } else {
-                    lastClickTime = now
+            when (event.eventType) {
+                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                    if (lastInputPackage != pkg) {
+                        lastInputTapTime = 0L
+                        lastInputPackage = pkg
+                    }
+                    // Eğer sistem arka planda paneli söktüyse bayat referansı temizle
+                    if (searchPanelView != null && searchPanelView?.isAttachedToWindow == false) {
+                        searchPanelView = null
+                    }
+                }
+                AccessibilityEvent.TYPE_VIEW_FOCUSED -> {
+                    if (isEditableInputEvent(event)) {
+                        // Boşta kaldıktan sonra mesaj kutusuna ilk dokunuş çoğu zaman FOCUS üretir;
+                        // bunu 1. tık olarak sayarak 2. tıkta panelin anında açılmasını sağla!
+                        lastInputTapTime = SystemClock.elapsedRealtime()
+                        lastInputPackage = pkg
+                    }
+                }
+                AccessibilityEvent.TYPE_VIEW_CLICKED -> {
+                    if (isEditableInputEvent(event)) {
+                        val now = SystemClock.elapsedRealtime()
+                        val elapsed = now - lastInputTapTime
+                        if (lastInputPackage == pkg && elapsed in 45L..900L) {
+                            lastInputTapTime = 0L
+                            showGameTurboSearchPanel()
+                        } else {
+                            lastInputTapTime = now
+                            lastInputPackage = pkg
+                        }
+                    }
                 }
             }
+        } catch (_: Throwable) {
+            // WhatsApp / HyperOS kaynaklı geçici IPC hataları servisi asla çökertmesin
+        }
+    }
+
+    private fun isEditableInputEvent(event: AccessibilityEvent): Boolean {
+        val clsName = event.className?.toString() ?: ""
+        if (clsName.contains("EditText", ignoreCase = true) ||
+            clsName.contains("AutoComplete", ignoreCase = true) ||
+            clsName.contains("MentionableEntry", ignoreCase = true)
+        ) {
+            return true
+        }
+        return try {
+            val src = event.source
+            val editable = src?.isEditable == true
+            try { src?.recycle() } catch (_: Exception) {}
+            editable
+        } catch (_: Exception) {
+            false
         }
     }
 
@@ -88,8 +152,16 @@ class SmartChatTriggerService : AccessibilityService() {
     }
 
     private fun showGameTurboSearchPanel() {
-        if (searchPanelView != null) return
+        val existing = searchPanelView
+        if (existing != null) {
+            if (existing.isAttachedToWindow) {
+                return
+            } else {
+                searchPanelView = null
+            }
+        }
 
+        val scope = ensureScope()
         var previewBoxRef: FrameLayout? = null
         var videoViewRef: VideoView? = null
         var searchInputRef: EditText? = null
@@ -263,7 +335,7 @@ class SmartChatTriggerService : AccessibilityService() {
 
         fun refreshOverlayList(query: String, immediate: Boolean = false) {
             searchJob?.cancel()
-            searchJob = serviceScope.launch {
+            searchJob = scope.launch {
                 if (!immediate && query.isNotEmpty()) delay(110)
                 val all = overlayCachedMemes ?: withContext(Dispatchers.IO) {
                     db.getAllMemes()
@@ -303,7 +375,7 @@ class SmartChatTriggerService : AccessibilityService() {
             if (albumDropdownScroll.visibility == View.VISIBLE) {
                 albumDropdownScroll.visibility = View.GONE
             } else {
-                serviceScope.launch {
+                scope.launch {
                     val albums = withContext(Dispatchers.IO) { db.getIndexedAlbumNames() }
                     albumDropdownList.removeAllViews()
 
@@ -365,7 +437,7 @@ class SmartChatTriggerService : AccessibilityService() {
 
         searchPanelView = container
         try {
-            windowManager.addView(container, params)
+            getWm().addView(container, params)
             searchInput.requestFocus()
         } catch (_: Exception) {
             searchPanelView = null
@@ -377,7 +449,7 @@ class SmartChatTriggerService : AccessibilityService() {
         overlayVideoViewRef = null
         searchPanelView?.let {
             try {
-                windowManager.removeView(it)
+                getWm().removeView(it)
             } catch (_: Exception) {}
             searchPanelView = null
         }
@@ -398,7 +470,7 @@ class SmartChatTriggerService : AccessibilityService() {
             val clip = ClipData.newUri(contentResolver, meme.fileName, uri)
             clipboard.setPrimaryClip(clip)
 
-            serviceScope.launch {
+            ensureScope().launch {
                 delay(200)
                 val focusedInput = try { rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) } catch (_: Exception) { null }
                 val pasted = try { focusedInput?.performAction(AccessibilityNodeInfo.ACTION_PASTE) == true } catch (_: Exception) { false }
@@ -435,6 +507,7 @@ class SmartChatTriggerService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        isServiceAlive = false
         closeSearchPanel()
         serviceScope.cancel()
     }
